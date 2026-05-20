@@ -106,6 +106,21 @@ echo-repro prepare-swebench \
   --workdir repos/
 ```
 
+Run one prepared SWE-bench instance through ECHO-Repro:
+
+```bash
+echo-repro run-swebench-one \
+  --instances-file data/swebench_lite.jsonl \
+  --instance-id django__django-12345 \
+  --workdir repos/ \
+  --mock \
+  --max-attempts 3
+```
+
+This prepares the buggy/fixed repos, runs the reproduction pipeline, prints a
+compact summary, and saves the full JSON artifact to
+`outputs/<instance_id>/result.json`.
+
 ## Example Behavior
 
 The included example models a bug where `buggy_module.divide(a, b)` returns `0` when `b == 0`, but the expected behavior is to raise `ZeroDivisionError`.

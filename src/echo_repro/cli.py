@@ -23,6 +23,7 @@ from echo_repro.swebench_adapter import (
     prepare_instance_stub,
     select_instance,
 )
+from echo_repro.validator import classify_execution
 
 app = typer.Typer(help="ECHO-Repro research prototype CLI.")
 console = Console()
@@ -67,6 +68,112 @@ def _print_pipeline_result(result, buggy_repo: Path) -> None:
     if result.fixed_execution:
         console.print(Panel(result.fixed_execution.stdout or result.fixed_execution.stderr or "(no output)", title="Fixed Execution Output"))
     console.print(Panel(result.validation.model_dump_json(indent=2), title="Validation Result"))
+
+
+def _build_swebench_result_payload(instance: dict, prepared, result: object) -> dict:
+    return {
+        "instance_metadata": get_repo_metadata(instance),
+        "prepared_repos": {
+            "instance_id": prepared.instance_id,
+            "repo": prepared.repo,
+            "base_commit": prepared.base_commit,
+            "buggy_repo": str(prepared.buggy_repo),
+            "fixed_repo": str(prepared.fixed_repo),
+            "patch_applied": prepared.patch_applied,
+        },
+        "bug_spec": result.bug_spec.model_dump(mode="json"),
+        "retrieved_files": {
+            "source_files": [str(path) for path in result.retrieved_context.source_files],
+            "test_files": [str(path) for path in result.retrieved_context.test_files],
+            "env_files": [str(path) for path in result.retrieved_context.env_files],
+        },
+        "concise_context_preview": result.concise_context,
+        "harness": {
+            "filename": result.harness_candidate.filename,
+            "code": result.harness_candidate.code,
+            "path": str(prepared.buggy_repo / result.harness_candidate.filename),
+        },
+        "execution": {
+            "buggy": {
+                "status": classify_execution(result.buggy_execution),
+                "stdout": result.buggy_execution.stdout,
+                "stderr": result.buggy_execution.stderr,
+            },
+            "fixed": {
+                "status": classify_execution(result.fixed_execution) if result.fixed_execution else None,
+                "stdout": result.fixed_execution.stdout if result.fixed_execution else "",
+                "stderr": result.fixed_execution.stderr if result.fixed_execution else "",
+            },
+        },
+        "validation": result.validation.model_dump(mode="json"),
+        "attempts": [attempt.model_dump(mode="json") for attempt in result.attempts],
+    }
+
+
+def _save_swebench_result(instance_id: str, payload: dict) -> Path:
+    output_dir = Path("outputs") / instance_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "result.json"
+    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return output_path
+
+
+def _print_swebench_run_result(instance: dict, prepared, result, output_path: Path) -> None:
+    console.print(
+        Panel(
+            json.dumps(
+                {
+                    "instance_id": prepared.instance_id,
+                    "repo": prepared.repo,
+                    "base_commit": prepared.base_commit,
+                    "buggy_repo": str(prepared.buggy_repo),
+                    "fixed_repo": str(prepared.fixed_repo),
+                    "patch_applied": prepared.patch_applied,
+                    "output_json": str(output_path),
+                },
+                indent=2,
+            ),
+            title="SWE-bench Run",
+        )
+    )
+
+    table = Table(title="Retrieved Files")
+    table.add_column("Kind")
+    table.add_column("Files")
+    table.add_row("Source", "\n".join(str(path) for path in result.retrieved_context.source_files) or "(none)")
+    table.add_row("Test", "\n".join(str(path) for path in result.retrieved_context.test_files) or "(none)")
+    table.add_row("Env", "\n".join(str(path) for path in result.retrieved_context.env_files) or "(none)")
+    console.print(table)
+
+    console.print(Panel(str(prepared.buggy_repo / result.harness_candidate.filename), title="Generated Harness Path"))
+    console.print(
+        Panel(
+            json.dumps(
+                {
+                    "buggy_execution_status": classify_execution(result.buggy_execution),
+                    "fixed_execution_status": classify_execution(result.fixed_execution) if result.fixed_execution else None,
+                    "validation": result.validation.model_dump(mode="json"),
+                },
+                indent=2,
+            ),
+            title="Execution Summary",
+        )
+    )
+
+    if result.attempts:
+        attempt_table = Table(title="Feedback Loop Attempts")
+        attempt_table.add_column("Attempt")
+        attempt_table.add_column("Action")
+        attempt_table.add_column("Buggy")
+        attempt_table.add_column("Fixed")
+        for attempt in result.attempts:
+            attempt_table.add_row(
+                str(attempt.attempt),
+                attempt.action,
+                attempt.buggy_status,
+                attempt.fixed_status or "-",
+            )
+        console.print(attempt_table)
 
 
 @app.command("run-one")
@@ -155,6 +262,40 @@ def prepare_swebench(
             title="Prepared SWE-bench Repos",
         )
     )
+
+
+@app.command("run-swebench-one")
+def run_swebench_one(
+    instances_file: Path = typer.Option(..., exists=True, help="Path to SWE-bench-style JSONL instances file."),
+    instance_id: str = typer.Option(..., help="SWE-bench instance identifier."),
+    workdir: Path = typer.Option(..., help="Directory for prepared buggy and fixed repos."),
+    mock: bool = typer.Option(True, "--mock/--no-mock", help="Use the mock LLM client."),
+    max_attempts: int | None = typer.Option(None, min=1, help="Use the feedback loop with this many attempts."),
+) -> None:
+    instances = load_instances(instances_file)
+    instance = select_instance(instances, instance_id)
+    prepared = prepare_swebench_repos(instance, workdir=workdir)
+    issue_text = extract_issue_text(instance)
+
+    if max_attempts is not None:
+        result = run_pipeline_with_feedback_loop(
+            issue_text,
+            buggy_repo=prepared.buggy_repo,
+            fixed_repo=prepared.fixed_repo,
+            use_mock_llm=mock,
+            max_attempts=max_attempts,
+        )
+    else:
+        result = run_pipeline(
+            issue_text,
+            buggy_repo=prepared.buggy_repo,
+            fixed_repo=prepared.fixed_repo,
+            use_mock_llm=mock,
+        )
+
+    payload = _build_swebench_result_payload(instance, prepared, result)
+    output_path = _save_swebench_result(prepared.instance_id, payload)
+    _print_swebench_run_result(instance, prepared, result, output_path)
 
 
 @app.command("version")
