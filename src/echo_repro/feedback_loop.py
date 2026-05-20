@@ -10,6 +10,7 @@ from echo_repro.models import (
     ExecutionResult,
     FeedbackLoopAttempt,
     HarnessCandidate,
+    LLMCallMetadata,
     PipelineResult,
     RetrievedContext,
     ValidationResult,
@@ -66,6 +67,13 @@ def run_feedback_loop(
     buggy_repo: Path,
     fixed_repo: Path | None = None,
     max_attempts: int = 3,
+    initial_prompt_text: str = "",
+    initial_llm_metadata: LLMCallMetadata | None = None,
+    llm_provider: str = "",
+    llm_model: str = "",
+    llm_temperature: float | None = None,
+    bug_spec_prompt: str = "",
+    bug_spec_llm_metadata: LLMCallMetadata | None = None,
 ) -> PipelineResult:
     harness_candidate = initial_harness
     attempts: list[FeedbackLoopAttempt] = []
@@ -74,6 +82,8 @@ def run_feedback_loop(
     last_fixed_execution: ExecutionResult | None = None
     next_action = "initial_generation"
     next_note = "Initial harness generation."
+    current_prompt_text = initial_prompt_text
+    current_llm_metadata = initial_llm_metadata or LLMCallMetadata()
 
     for attempt_index in range(1, max_attempts + 1):
         buggy_execution = _run_once(Path(buggy_repo), harness_candidate)
@@ -92,6 +102,8 @@ def run_feedback_loop(
                 attempt=attempt_index,
                 action=next_action,
                 note=next_note,
+                prompt_text=current_prompt_text,
+                llm_metadata=current_llm_metadata,
                 harness_candidate=harness_candidate,
                 buggy_execution=buggy_execution,
                 buggy_status=buggy_status,
@@ -119,6 +131,8 @@ def run_feedback_loop(
             )
             next_action = "repair_harness"
             next_note = f"Repaired harness after {buggy_status}."
+            current_prompt_text = llm_client.last_prompt
+            current_llm_metadata = llm_client.last_call_metadata or LLMCallMetadata()
             continue
 
         if buggy_status != "reproduced":
@@ -131,6 +145,8 @@ def run_feedback_loop(
             )
             next_action = "strengthen_oracle"
             next_note = f"Strengthened oracle after buggy status {buggy_status}."
+            current_prompt_text = llm_client.last_prompt
+            current_llm_metadata = llm_client.last_call_metadata or LLMCallMetadata()
             continue
 
         harness_candidate = repair_harness(
@@ -146,10 +162,19 @@ def run_feedback_loop(
         )
         next_action = "strengthen_oracle"
         next_note = "Strengthened oracle because Fail-to-Pass was not yet satisfied."
+        current_prompt_text = llm_client.last_prompt
+        current_llm_metadata = llm_client.last_call_metadata or LLMCallMetadata()
 
     assert validation is not None
     assert last_buggy_execution is not None
     return PipelineResult(
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        llm_temperature=llm_temperature,
+        bug_spec_prompt=bug_spec_prompt,
+        bug_spec_llm_metadata=bug_spec_llm_metadata or LLMCallMetadata(),
+        initial_harness_prompt=initial_prompt_text,
+        initial_harness_llm_metadata=initial_llm_metadata or LLMCallMetadata(),
         bug_spec=bug_spec,
         retrieved_context=retrieved_context,
         concise_context=concise_context,

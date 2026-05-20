@@ -84,11 +84,15 @@ def test_run_swebench_one_creates_result_json(tmp_path: Path, monkeypatch):
         assert output_path.exists()
         payload = json.loads(output_path.read_text(encoding="utf-8"))
         assert payload["instance_metadata"]["instance_id"] == "demo__repo-1"
-        assert payload["prepared_repos"]["patch_applied"] is True
-        assert payload["execution"]["buggy"]["status"] == "reproduced"
-        assert payload["execution"]["fixed"]["status"] == "resolved"
-        assert payload["validation"]["success"] is True
-        assert isinstance(payload["attempts"], list)
+        assert payload["instance_metadata"]["patch_applied"] is True
+        assert payload["final_result"]["buggy_status"] == "reproduced"
+        assert payload["final_result"]["fixed_status"] == "resolved"
+        assert payload["final_result"]["is_f2p"] is True
+        assert payload["schema_version"] == "0.2"
+        assert Path("outputs/demo__repo-1/concise_context.md").exists()
+        assert Path("outputs/demo__repo-1/final_reproduce.py").exists()
+        assert Path("outputs/demo__repo-1/attempts.jsonl").exists()
+        assert Path("outputs/demo__repo-1/prompts/bug_spec.md").exists()
 
 
 def test_existing_version_command_still_works():

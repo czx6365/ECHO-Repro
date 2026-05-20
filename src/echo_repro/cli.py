@@ -15,6 +15,7 @@ from echo_repro.llm.mock_client import MockLLMClient
 from echo_repro.llm.openai_client import OpenAICompatibleLLMClient
 from echo_repro.pipeline import run_pipeline, run_pipeline_with_feedback_loop
 from echo_repro.repo_manager import prepare_swebench_repos
+from echo_repro.result_writer import write_experiment_record
 from echo_repro.retriever import retrieve_context
 from echo_repro.swebench_adapter import (
     extract_issue_text,
@@ -81,54 +82,6 @@ def _print_pipeline_result(result, buggy_repo: Path) -> None:
     if result.fixed_execution:
         console.print(Panel(result.fixed_execution.stdout or result.fixed_execution.stderr or "(no output)", title="Fixed Execution Output"))
     console.print(Panel(result.validation.model_dump_json(indent=2), title="Validation Result"))
-
-
-def _build_swebench_result_payload(instance: dict, prepared, result: object) -> dict:
-    return {
-        "instance_metadata": get_repo_metadata(instance),
-        "prepared_repos": {
-            "instance_id": prepared.instance_id,
-            "repo": prepared.repo,
-            "base_commit": prepared.base_commit,
-            "buggy_repo": str(prepared.buggy_repo),
-            "fixed_repo": str(prepared.fixed_repo),
-            "patch_applied": prepared.patch_applied,
-        },
-        "bug_spec": result.bug_spec.model_dump(mode="json"),
-        "retrieved_files": {
-            "source_files": [str(path) for path in result.retrieved_context.source_files],
-            "test_files": [str(path) for path in result.retrieved_context.test_files],
-            "env_files": [str(path) for path in result.retrieved_context.env_files],
-        },
-        "concise_context_preview": result.concise_context,
-        "harness": {
-            "filename": result.harness_candidate.filename,
-            "code": result.harness_candidate.code,
-            "path": str(prepared.buggy_repo / result.harness_candidate.filename),
-        },
-        "execution": {
-            "buggy": {
-                "status": classify_execution(result.buggy_execution),
-                "stdout": result.buggy_execution.stdout,
-                "stderr": result.buggy_execution.stderr,
-            },
-            "fixed": {
-                "status": classify_execution(result.fixed_execution) if result.fixed_execution else None,
-                "stdout": result.fixed_execution.stdout if result.fixed_execution else "",
-                "stderr": result.fixed_execution.stderr if result.fixed_execution else "",
-            },
-        },
-        "validation": result.validation.model_dump(mode="json"),
-        "attempts": [attempt.model_dump(mode="json") for attempt in result.attempts],
-    }
-
-
-def _save_swebench_result(instance_id: str, payload: dict) -> Path:
-    output_dir = Path("outputs") / instance_id
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "result.json"
-    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return output_path
 
 
 def _print_swebench_run_result(instance: dict, prepared, result, output_path: Path) -> None:
@@ -335,8 +288,12 @@ def run_swebench_one(
     except ValueError as exc:
         _raise_cli_error(exc)
 
-    payload = _build_swebench_result_payload(instance, prepared, result)
-    output_path = _save_swebench_result(prepared.instance_id, payload)
+    output_path = write_experiment_record(
+        instance=instance,
+        prepared=prepared,
+        result=result,
+        max_attempts=max_attempts,
+    )
     _print_swebench_run_result(instance, prepared, result, output_path)
 
 

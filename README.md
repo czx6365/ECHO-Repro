@@ -121,6 +121,40 @@ This prepares the buggy/fixed repos, runs the reproduction pipeline, prints a
 compact summary, and saves the full JSON artifact to
 `outputs/<instance_id>/result.json`.
 
+## Output Artifacts
+
+Each `run-swebench-one` execution writes a research-friendly record under:
+
+```text
+outputs/{instance_id}/
+  result.json
+  concise_context.md
+  final_reproduce.py
+  attempts.jsonl
+  prompts/
+  attempts/
+```
+
+Key files:
+
+- `result.json`: stable experiment record with `schema_version`
+- `concise_context.md`: exact context used for harness generation
+- `final_reproduce.py`: final harness after generation or repair
+- `attempts.jsonl`: one JSON record per generation/repair attempt
+- `prompts/`: prompt snapshots for BugSpec extraction and each harness attempt
+- `attempts/`: the harness code emitted at each attempt
+
+Use `result.json` to inspect:
+
+- instance metadata
+- run configuration
+- retrieved source/test/env files
+- final statuses and Fail-to-Pass outcome
+- artifact paths for downstream analysis
+
+This layout is designed to support ablation experiments, prompt comparisons,
+repair-loop analysis, and offline auditability of what the system actually ran.
+
 ## Example Behavior
 
 The included example models a bug where `buggy_module.divide(a, b)` returns `0` when `b == 0`, but the expected behavior is to raise `ZeroDivisionError`.

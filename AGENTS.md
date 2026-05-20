@@ -10,6 +10,7 @@ Guidance for future Codex or contributor tasks in this repository:
 - No automated test should require a real API key or live LLM network access.
 - Network-dependent tests must be mocked or replaced with local fixtures.
 - CLI integration tests should write outputs into temp directories and stay offline.
+- Keep experiment artifact formats stable so runs remain comparable across versions.
 - Keep sandbox warnings around generated code and execution.
 - Avoid heavyweight dependencies unless they clearly unlock needed capability.
 - Prefer extending retrieval and prompting through clean seams rather than rewriting the pipeline.

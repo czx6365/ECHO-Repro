@@ -54,6 +54,16 @@ class ExecutionResult(BaseModel):
     timed_out: bool = False
 
 
+class LLMCallMetadata(BaseModel):
+    provider: str = ""
+    model: str = ""
+    latency_ms: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    raw_usage: dict = Field(default_factory=dict)
+
+
 class ValidationResult(BaseModel):
     success: bool
     buggy_status: ExecutionStatus
@@ -74,6 +84,8 @@ class FeedbackLoopAttempt(BaseModel):
     attempt: int
     action: str
     note: str = ""
+    prompt_text: str = ""
+    llm_metadata: LLMCallMetadata = Field(default_factory=LLMCallMetadata)
     harness_candidate: HarnessCandidate
     buggy_execution: ExecutionResult
     buggy_status: ExecutionStatus
@@ -82,6 +94,13 @@ class FeedbackLoopAttempt(BaseModel):
 
 
 class PipelineResult(BaseModel):
+    llm_provider: str = ""
+    llm_model: str = ""
+    llm_temperature: float | None = None
+    bug_spec_prompt: str = ""
+    bug_spec_llm_metadata: LLMCallMetadata = Field(default_factory=LLMCallMetadata)
+    initial_harness_prompt: str = ""
+    initial_harness_llm_metadata: LLMCallMetadata = Field(default_factory=LLMCallMetadata)
     bug_spec: BugSpec
     retrieved_context: RetrievedContext
     concise_context: str

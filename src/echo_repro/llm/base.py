@@ -11,6 +11,9 @@ from echo_repro.prompts import (
 
 
 class BaseLLMClient(ABC):
+    last_prompt: str = ""
+    last_call_metadata = None
+
     @abstractmethod
     def generate_text(self, prompt: str) -> str:
         raise NotImplementedError
@@ -20,25 +23,29 @@ class BaseLLMClient(ABC):
         raise NotImplementedError
 
     def extract_bug_spec(self, issue_text: str) -> dict:
-        return self.generate_json(build_bug_spec_extraction_prompt(issue_text))
+        prompt = build_bug_spec_extraction_prompt(issue_text)
+        self.last_prompt = prompt
+        return self.generate_json(prompt)
 
     def generate_harness(self, concise_context: str) -> str:
-        return self.generate_text(build_harness_generation_prompt(concise_context))
+        prompt = build_harness_generation_prompt(concise_context)
+        self.last_prompt = prompt
+        return self.generate_text(prompt)
 
     def repair_harness(self, concise_context: str, current_code: str, feedback: str) -> str:
-        return self.generate_text(
-            build_harness_repair_prompt(
-                concise_context=concise_context,
-                current_code=current_code,
-                feedback=feedback,
-            )
+        prompt = build_harness_repair_prompt(
+            concise_context=concise_context,
+            current_code=current_code,
+            feedback=feedback,
         )
+        self.last_prompt = prompt
+        return self.generate_text(prompt)
 
     def strengthen_oracle(self, concise_context: str, current_code: str, feedback: str) -> str:
-        return self.generate_text(
-            build_harness_strengthen_prompt(
-                concise_context=concise_context,
-                current_code=current_code,
-                feedback=feedback,
-            )
+        prompt = build_harness_strengthen_prompt(
+            concise_context=concise_context,
+            current_code=current_code,
+            feedback=feedback,
         )
+        self.last_prompt = prompt
+        return self.generate_text(prompt)

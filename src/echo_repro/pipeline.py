@@ -11,7 +11,7 @@ from echo_repro.harness_generator import generate_harness
 from echo_repro.llm.base import BaseLLMClient
 from echo_repro.llm.mock_client import MockLLMClient
 from echo_repro.llm.openai_client import OpenAICompatibleLLMClient
-from echo_repro.models import PipelineResult
+from echo_repro.models import LLMCallMetadata, PipelineResult
 from echo_repro.retriever import retrieve_context
 from echo_repro.validator import validate_fail_to_pass
 from echo_repro.config import get_llm_settings
@@ -35,9 +35,13 @@ def run_pipeline(
 ) -> PipelineResult:
     llm_client = _make_llm_client(use_mock_llm, llm_provider=llm_provider)
     bug_spec = extract_bug_spec(issue_text, llm_client)
+    bug_spec_prompt = llm_client.last_prompt
+    bug_spec_llm_metadata = llm_client.last_call_metadata or LLMCallMetadata()
     retrieved_context = retrieve_context(buggy_repo, bug_spec)
     concise_context = build_concise_context(issue_text, bug_spec, retrieved_context)
     harness_candidate = generate_harness(concise_context, llm_client)
+    initial_harness_prompt = llm_client.last_prompt
+    initial_harness_llm_metadata = llm_client.last_call_metadata or LLMCallMetadata()
 
     write_harness(buggy_repo, harness_candidate, filename=harness_candidate.filename)
     buggy_execution = run_harness(
@@ -55,6 +59,13 @@ def run_pipeline(
 
     validation = validate_fail_to_pass(buggy_execution, fixed_execution)
     return PipelineResult(
+        llm_provider=llm_provider or ("mock" if use_mock_llm else "openai"),
+        llm_model=getattr(llm_client, "settings", get_llm_settings()).model,
+        llm_temperature=getattr(llm_client, "settings", get_llm_settings()).temperature,
+        bug_spec_prompt=bug_spec_prompt,
+        bug_spec_llm_metadata=bug_spec_llm_metadata,
+        initial_harness_prompt=initial_harness_prompt,
+        initial_harness_llm_metadata=initial_harness_llm_metadata,
         bug_spec=bug_spec,
         retrieved_context=retrieved_context,
         concise_context=concise_context,
@@ -75,9 +86,13 @@ def run_pipeline_with_feedback_loop(
 ) -> PipelineResult:
     llm_client = _make_llm_client(use_mock_llm, llm_provider=llm_provider)
     bug_spec = extract_bug_spec(issue_text, llm_client)
+    bug_spec_prompt = llm_client.last_prompt
+    bug_spec_llm_metadata = llm_client.last_call_metadata or LLMCallMetadata()
     retrieved_context = retrieve_context(buggy_repo, bug_spec)
     concise_context = build_concise_context(issue_text, bug_spec, retrieved_context)
     harness_candidate = generate_harness(concise_context, llm_client)
+    initial_harness_prompt = llm_client.last_prompt
+    initial_harness_llm_metadata = llm_client.last_call_metadata or LLMCallMetadata()
     return run_feedback_loop(
         bug_spec=bug_spec,
         retrieved_context=retrieved_context,
@@ -87,4 +102,11 @@ def run_pipeline_with_feedback_loop(
         buggy_repo=buggy_repo,
         fixed_repo=fixed_repo,
         max_attempts=max_attempts,
+        initial_prompt_text=initial_harness_prompt,
+        initial_llm_metadata=initial_harness_llm_metadata,
+        llm_provider=llm_provider or ("mock" if use_mock_llm else "openai"),
+        llm_model=getattr(llm_client, "settings", get_llm_settings()).model,
+        llm_temperature=getattr(llm_client, "settings", get_llm_settings()).temperature,
+        bug_spec_prompt=bug_spec_prompt,
+        bug_spec_llm_metadata=bug_spec_llm_metadata,
     )
