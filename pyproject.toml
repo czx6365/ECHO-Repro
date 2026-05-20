@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "echo-repro"
+version = "0.1.0"
+description = "Research prototype for environment-aware bug reproduction harness synthesis."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "datasets>=2.19,<4",
+  "pydantic>=2.7,<3",
+  "rich>=13.7,<14",
+  "typer>=0.12,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2,<9",
+]
+
+[project.scripts]
+echo-repro = "echo_repro.cli:app"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

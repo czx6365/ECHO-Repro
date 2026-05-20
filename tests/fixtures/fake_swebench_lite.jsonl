@@ -1,0 +1,2 @@
+{"instance_id": "django__django-10001", "repo": "django/django", "version": "lite", "base_commit": "abc123", "problem_statement": "First fake issue.", "hints_text": "First hint."}
+{"instance_id": "pallets__flask-10002", "repo": "pallets/flask", "version": "lite", "base_commit": "def456", "problem_statement": "Second fake issue.", "hints_text": "Second hint."}

@@ -1,0 +1,14 @@
+Title: divide(a, b) should raise ZeroDivisionError when b is zero
+
+Current behavior:
+Calling divide(10, 0) returns 0.
+
+Expected behavior:
+Calling divide(10, 0) should raise ZeroDivisionError.
+
+Failure signature:
+The function silently swallows division by zero instead of raising.
+
+Relevant symbol:
+divide
+
