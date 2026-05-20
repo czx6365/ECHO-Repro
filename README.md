@@ -150,15 +150,39 @@ The generated harness checks that:
 
 The MVP defaults to `MockLLMClient`, which requires no network access.
 
+Use mock mode explicitly:
+
+```bash
+echo-repro run-swebench-one \
+  --instances-file data/swebench_lite.jsonl \
+  --instance-id django__django-12345 \
+  --workdir repos/ \
+  --llm mock \
+  --max-attempts 3
+```
+
 An OpenAI-compatible endpoint can be used via environment variables:
 
 ```bash
-export ECHO_REPRO_LLM_BASE_URL="https://api.openai.com/v1"
-export ECHO_REPRO_LLM_API_KEY="..."
-export ECHO_REPRO_LLM_MODEL="gpt-4o-mini"
+export OPENAI_API_KEY="..."
+export OPENAI_BASE_URL="https://api.openai.com/v1"  # optional
+export OPENAI_MODEL="gpt-4o-mini"
+export OPENAI_TEMPERATURE="0.2"
 ```
 
-Then run the CLI without `--mock`.
+Then run with `--llm openai`:
+
+```bash
+echo-repro run-swebench-one \
+  --instances-file data/swebench_lite.jsonl \
+  --instance-id django__django-12345 \
+  --workdir repos/ \
+  --llm openai \
+  --max-attempts 3
+```
+
+`--mock` / `--no-mock` is still supported as a backward-compatible alias, but
+`--llm mock|openai` is the preferred interface.
 
 ## Safety Note
 

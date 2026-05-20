@@ -7,6 +7,7 @@ Guidance for future Codex or contributor tasks in this repository:
 - Run `pytest` before finishing work.
 - Do not remove or break mock mode. The project must remain runnable offline.
 - Keep the feedback loop deterministic in mock mode so tests stay stable.
+- No automated test should require a real API key or live LLM network access.
 - Network-dependent tests must be mocked or replaced with local fixtures.
 - CLI integration tests should write outputs into temp directories and stay offline.
 - Keep sandbox warnings around generated code and execution.

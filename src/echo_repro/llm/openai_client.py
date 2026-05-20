@@ -1,86 +1,65 @@
 from __future__ import annotations
 
 import json
-from urllib import request
+from typing import Any
 
-from echo_repro.config import get_llm_settings
+from echo_repro.config import LLMSettings, get_llm_settings
 from echo_repro.llm.base import BaseLLMClient
 
 
 class OpenAICompatibleLLMClient(BaseLLMClient):
-    def __init__(self) -> None:
-        self.settings = get_llm_settings()
-        if not self.settings.base_url or not self.settings.api_key:
+    def __init__(self, settings: LLMSettings | None = None, client: Any | None = None) -> None:
+        self.settings = settings or get_llm_settings()
+        if not self.settings.api_key:
+            raise ValueError("OPENAI_API_KEY is required when using --llm openai.")
+
+        if client is not None:
+            self.client = client
+            return
+
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
             raise ValueError(
-                "OpenAI-compatible client requires ECHO_REPRO_LLM_BASE_URL and ECHO_REPRO_LLM_API_KEY."
-            )
+                "The openai package is required for --llm openai. Install dependencies from pyproject.toml."
+            ) from exc
 
-    def _post_chat(self, system_prompt: str, user_prompt: str) -> str:
-        payload = {
-            "model": self.settings.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+        client_kwargs: dict[str, Any] = {"api_key": self.settings.api_key}
+        if self.settings.base_url:
+            client_kwargs["base_url"] = self.settings.base_url
+        self.client = OpenAI(**client_kwargs)
+
+    def generate_text(self, prompt: str) -> str:
+        response = self.client.chat.completions.create(
+            model=self.settings.model,
+            temperature=self.settings.temperature,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a precise software engineering assistant. Follow the user's output format exactly.",
+                },
+                {"role": "user", "content": prompt},
             ],
-            "temperature": 0,
-        }
-        data = json.dumps(payload).encode("utf-8")
-        req = request.Request(
-            url=f"{self.settings.base_url.rstrip('/')}/chat/completions",
-            data=data,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.settings.api_key}",
-            },
-            method="POST",
         )
-        with request.urlopen(req, timeout=self.settings.timeout_seconds) as response:
-            body = json.loads(response.read().decode("utf-8"))
-        return body["choices"][0]["message"]["content"]
+        content = response.choices[0].message.content
+        if not content:
+            raise ValueError("OpenAI-compatible model returned empty text content.")
+        return content.strip()
 
-    def extract_bug_spec(self, issue_text: str) -> dict:
-        content = self._post_chat(
-            "You extract structured bug specifications as compact JSON.",
-            (
-                "Return JSON with keys: title, summary, current_behavior, expected_behavior, "
-                "failure_signature, reproduction_hint, keywords, suspect_symbols.\n\n"
-                f"Issue text:\n{issue_text}"
-            ),
+    def generate_json(self, prompt: str) -> dict:
+        response = self.client.chat.completions.create(
+            model=self.settings.model,
+            temperature=self.settings.temperature,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You return only valid JSON objects with no markdown fences.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
         )
+        content = response.choices[0].message.content
+        if not content:
+            raise ValueError("OpenAI-compatible model returned empty JSON content.")
         return json.loads(content)
-
-    def generate_harness(self, concise_context: str) -> str:
-        return self._post_chat(
-            "You write minimal executable Python reproduction harnesses.",
-            (
-                "Generate only a complete Python file. It must print exactly one of "
-                "'Issue reproduced', 'Issue resolved', or 'Other issues'.\n\n"
-                f"Context:\n{concise_context}"
-            ),
-        )
-
-    def repair_harness(self, concise_context: str, current_code: str, feedback: str) -> str:
-        return self._post_chat(
-            "You repair failing Python reproduction harnesses.",
-            (
-                "Repair the Python harness based on the execution feedback. "
-                "Return only a complete Python file. It must print exactly one of "
-                "'Issue reproduced', 'Issue resolved', or 'Other issues'.\n\n"
-                f"Context:\n{concise_context}\n\n"
-                f"Current harness:\n{current_code}\n\n"
-                f"Feedback:\n{feedback}"
-            ),
-        )
-
-    def strengthen_oracle(self, concise_context: str, current_code: str, feedback: str) -> str:
-        return self._post_chat(
-            "You strengthen bug reproduction harness oracles.",
-            (
-                "Revise the Python harness so it better distinguishes reproduced bugs from resolved behavior. "
-                "Return only a complete Python file. It must print exactly one of "
-                "'Issue reproduced', 'Issue resolved', or 'Other issues'.\n\n"
-                f"Context:\n{concise_context}\n\n"
-                f"Current harness:\n{current_code}\n\n"
-                f"Feedback:\n{feedback}"
-            ),
-        )

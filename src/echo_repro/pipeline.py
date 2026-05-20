@@ -14,12 +14,16 @@ from echo_repro.llm.openai_client import OpenAICompatibleLLMClient
 from echo_repro.models import PipelineResult
 from echo_repro.retriever import retrieve_context
 from echo_repro.validator import validate_fail_to_pass
+from echo_repro.config import get_llm_settings
 
 
-def _make_llm_client(use_mock_llm: bool) -> BaseLLMClient:
-    if use_mock_llm:
+def _make_llm_client(use_mock_llm: bool = True, llm_provider: str | None = None) -> BaseLLMClient:
+    provider = llm_provider or ("mock" if use_mock_llm else get_llm_settings().llm_provider)
+    if provider == "mock":
         return MockLLMClient()
-    return OpenAICompatibleLLMClient()
+    if provider == "openai":
+        return OpenAICompatibleLLMClient()
+    raise ValueError(f"Unsupported LLM provider: {provider}")
 
 
 def run_pipeline(
@@ -27,8 +31,9 @@ def run_pipeline(
     buggy_repo: Path,
     fixed_repo: Path | None = None,
     use_mock_llm: bool = True,
+    llm_provider: str | None = None,
 ) -> PipelineResult:
-    llm_client = _make_llm_client(use_mock_llm)
+    llm_client = _make_llm_client(use_mock_llm, llm_provider=llm_provider)
     bug_spec = extract_bug_spec(issue_text, llm_client)
     retrieved_context = retrieve_context(buggy_repo, bug_spec)
     concise_context = build_concise_context(issue_text, bug_spec, retrieved_context)
@@ -66,8 +71,9 @@ def run_pipeline_with_feedback_loop(
     fixed_repo: Path | None = None,
     use_mock_llm: bool = True,
     max_attempts: int = 3,
+    llm_provider: str | None = None,
 ) -> PipelineResult:
-    llm_client = _make_llm_client(use_mock_llm)
+    llm_client = _make_llm_client(use_mock_llm, llm_provider=llm_provider)
     bug_spec = extract_bug_spec(issue_text, llm_client)
     retrieved_context = retrieve_context(buggy_repo, bug_spec)
     concise_context = build_concise_context(issue_text, bug_spec, retrieved_context)

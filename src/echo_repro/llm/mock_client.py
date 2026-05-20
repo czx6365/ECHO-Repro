@@ -6,6 +6,15 @@ from echo_repro.llm.base import BaseLLMClient
 
 
 class MockLLMClient(BaseLLMClient):
+    def generate_text(self, prompt: str) -> str:
+        if "strengthen its oracle" in prompt.lower():
+            return self.strengthen_oracle(prompt, "", "")
+        return self.generate_harness(prompt)
+
+    def generate_json(self, prompt: str) -> dict:
+        issue_text = _extract_issue_text_from_prompt(prompt)
+        return self.extract_bug_spec(issue_text)
+
     def extract_bug_spec(self, issue_text: str) -> dict:
         title = issue_text.strip().splitlines()[0].replace("Title:", "").strip()
         symbol_match = re.search(r"Relevant symbol:\s*(.+)", issue_text, flags=re.IGNORECASE)
@@ -115,3 +124,10 @@ if __name__ == "__main__":
 def _extract(text: str, label: str) -> str:
     match = re.search(rf"{label}:\s*(.+?)(?=\n[A-Z][A-Za-z ]+:\s|\Z)", text, flags=re.IGNORECASE | re.DOTALL)
     return " ".join(match.group(1).strip().split()) if match else ""
+
+
+def _extract_issue_text_from_prompt(prompt: str) -> str:
+    marker = "Issue text:\n"
+    if marker in prompt:
+        return prompt.split(marker, maxsplit=1)[1].strip()
+    return prompt

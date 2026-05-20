@@ -95,3 +95,99 @@ def test_existing_version_command_still_works():
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
     assert "0.1.0" in result.stdout
+
+
+def test_run_swebench_one_accepts_llm_mock(tmp_path: Path, monkeypatch):
+    instances_file = tmp_path / "instances.jsonl"
+    instance = {
+        "instance_id": "demo__repo-2",
+        "repo": "demo/repo",
+        "version": "lite",
+        "base_commit": "abc123",
+        "problem_statement": "divide(a, b) should raise ZeroDivisionError when b is zero",
+        "patch": "unused in mocked prepare",
+    }
+    instances_file.write_text(json.dumps(instance) + "\n", encoding="utf-8")
+
+    buggy_repo = tmp_path / "prepared" / "demo__repo-2" / "buggy"
+    fixed_repo = tmp_path / "prepared" / "demo__repo-2" / "fixed"
+    _make_mock_repo(buggy_repo, fixed=False)
+    _make_mock_repo(fixed_repo, fixed=True)
+
+    def fake_prepare(instance: dict, workdir: Path) -> PreparedRepos:
+        return PreparedRepos(
+            instance_id=instance["instance_id"],
+            repo=instance["repo"],
+            base_commit=instance["base_commit"],
+            buggy_repo=buggy_repo,
+            fixed_repo=fixed_repo,
+            patch_applied=True,
+        )
+
+    monkeypatch.setattr(cli_module, "prepare_swebench_repos", fake_prepare)
+
+    with runner.isolated_filesystem(temp_dir=str(tmp_path)):
+        result = runner.invoke(
+            app,
+            [
+                "run-swebench-one",
+                "--instances-file",
+                str(instances_file),
+                "--instance-id",
+                "demo__repo-2",
+                "--workdir",
+                "repos",
+                "--llm",
+                "mock",
+            ],
+        )
+        assert result.exit_code == 0, result.stdout
+
+
+def test_run_swebench_one_openai_without_api_key_gives_clear_error(tmp_path: Path, monkeypatch):
+    instances_file = tmp_path / "instances.jsonl"
+    instance = {
+        "instance_id": "demo__repo-3",
+        "repo": "demo/repo",
+        "version": "lite",
+        "base_commit": "abc123",
+        "problem_statement": "divide(a, b) should raise ZeroDivisionError when b is zero",
+        "patch": "unused in mocked prepare",
+    }
+    instances_file.write_text(json.dumps(instance) + "\n", encoding="utf-8")
+
+    buggy_repo = tmp_path / "prepared" / "demo__repo-3" / "buggy"
+    fixed_repo = tmp_path / "prepared" / "demo__repo-3" / "fixed"
+    _make_mock_repo(buggy_repo, fixed=False)
+    _make_mock_repo(fixed_repo, fixed=True)
+
+    def fake_prepare(instance: dict, workdir: Path) -> PreparedRepos:
+        return PreparedRepos(
+            instance_id=instance["instance_id"],
+            repo=instance["repo"],
+            base_commit=instance["base_commit"],
+            buggy_repo=buggy_repo,
+            fixed_repo=fixed_repo,
+            patch_applied=True,
+        )
+
+    monkeypatch.setattr(cli_module, "prepare_swebench_repos", fake_prepare)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with runner.isolated_filesystem(temp_dir=str(tmp_path)):
+        result = runner.invoke(
+            app,
+            [
+                "run-swebench-one",
+                "--instances-file",
+                str(instances_file),
+                "--instance-id",
+                "demo__repo-3",
+                "--workdir",
+                "repos",
+                "--llm",
+                "openai",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "OPENAI_API_KEY" in result.stdout

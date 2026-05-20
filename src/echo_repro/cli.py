@@ -37,6 +37,19 @@ def _get_client(use_mock: bool):
     return MockLLMClient() if use_mock else OpenAICompatibleLLMClient()
 
 
+def _resolve_llm_provider(llm: str, mock: bool | None) -> str:
+    if mock is True:
+        return "mock"
+    if mock is False:
+        return "openai"
+    return llm
+
+
+def _raise_cli_error(exc: ValueError) -> None:
+    console.print(f"LLM configuration error: {exc}")
+    raise typer.Exit(code=2)
+
+
 def _print_pipeline_result(result, buggy_repo: Path) -> None:
     console.print(Panel(result.bug_spec.model_dump_json(indent=2), title="BugSpec"))
 
@@ -181,10 +194,21 @@ def run_one(
     issue_file: Path = typer.Option(..., exists=True, help="Path to issue text file."),
     buggy_repo: Path = typer.Option(..., exists=True, file_okay=False, help="Buggy repository path."),
     fixed_repo: Path | None = typer.Option(None, exists=True, file_okay=False, help="Fixed repository path."),
-    mock: bool = typer.Option(True, "--mock/--no-mock", help="Use the mock LLM client."),
+    llm: str = typer.Option("mock", "--llm", help="LLM provider: mock or openai."),
+    mock: bool | None = typer.Option(None, "--mock/--no-mock", help="Backward-compatible alias for --llm."),
 ) -> None:
     issue_text = _load_issue_text(issue_file)
-    result = run_pipeline(issue_text, buggy_repo=buggy_repo, fixed_repo=fixed_repo, use_mock_llm=mock)
+    provider = _resolve_llm_provider(llm, mock)
+    try:
+        result = run_pipeline(
+            issue_text,
+            buggy_repo=buggy_repo,
+            fixed_repo=fixed_repo,
+            use_mock_llm=provider == "mock",
+            llm_provider=provider,
+        )
+    except ValueError as exc:
+        _raise_cli_error(exc)
     _print_pipeline_result(result, buggy_repo)
 
 
@@ -194,16 +218,22 @@ def run_loop(
     buggy_repo: Path = typer.Option(..., exists=True, file_okay=False, help="Buggy repository path."),
     fixed_repo: Path | None = typer.Option(None, exists=True, file_okay=False, help="Fixed repository path."),
     max_attempts: int = typer.Option(3, min=1, help="Maximum feedback loop attempts."),
-    mock: bool = typer.Option(True, "--mock/--no-mock", help="Use the mock LLM client."),
+    llm: str = typer.Option("mock", "--llm", help="LLM provider: mock or openai."),
+    mock: bool | None = typer.Option(None, "--mock/--no-mock", help="Backward-compatible alias for --llm."),
 ) -> None:
     issue_text = _load_issue_text(issue_file)
-    result = run_pipeline_with_feedback_loop(
-        issue_text,
-        buggy_repo=buggy_repo,
-        fixed_repo=fixed_repo,
-        use_mock_llm=mock,
-        max_attempts=max_attempts,
-    )
+    provider = _resolve_llm_provider(llm, mock)
+    try:
+        result = run_pipeline_with_feedback_loop(
+            issue_text,
+            buggy_repo=buggy_repo,
+            fixed_repo=fixed_repo,
+            use_mock_llm=provider == "mock",
+            max_attempts=max_attempts,
+            llm_provider=provider,
+        )
+    except ValueError as exc:
+        _raise_cli_error(exc)
     _print_pipeline_result(result, buggy_repo)
 
 
@@ -211,10 +241,15 @@ def run_loop(
 def inspect_context(
     issue_file: Path = typer.Option(..., exists=True, help="Path to issue text file."),
     repo: Path = typer.Option(..., exists=True, file_okay=False, help="Repository path."),
-    mock: bool = typer.Option(True, "--mock/--no-mock", help="Use the mock LLM client."),
+    llm: str = typer.Option("mock", "--llm", help="LLM provider: mock or openai."),
+    mock: bool | None = typer.Option(None, "--mock/--no-mock", help="Backward-compatible alias for --llm."),
 ) -> None:
     issue_text = _load_issue_text(issue_file)
-    llm_client = _get_client(mock)
+    provider = _resolve_llm_provider(llm, mock)
+    try:
+        llm_client = _get_client(provider == "mock")
+    except ValueError as exc:
+        _raise_cli_error(exc)
     bug_spec = extract_bug_spec(issue_text, llm_client)
     retrieved_context = retrieve_context(repo, bug_spec)
     concise_context = build_concise_context(issue_text, bug_spec, retrieved_context)
@@ -269,29 +304,36 @@ def run_swebench_one(
     instances_file: Path = typer.Option(..., exists=True, help="Path to SWE-bench-style JSONL instances file."),
     instance_id: str = typer.Option(..., help="SWE-bench instance identifier."),
     workdir: Path = typer.Option(..., help="Directory for prepared buggy and fixed repos."),
-    mock: bool = typer.Option(True, "--mock/--no-mock", help="Use the mock LLM client."),
+    llm: str = typer.Option("mock", "--llm", help="LLM provider: mock or openai."),
+    mock: bool | None = typer.Option(None, "--mock/--no-mock", help="Backward-compatible alias for --llm."),
     max_attempts: int | None = typer.Option(None, min=1, help="Use the feedback loop with this many attempts."),
 ) -> None:
     instances = load_instances(instances_file)
     instance = select_instance(instances, instance_id)
     prepared = prepare_swebench_repos(instance, workdir=workdir)
     issue_text = extract_issue_text(instance)
+    provider = _resolve_llm_provider(llm, mock)
 
-    if max_attempts is not None:
-        result = run_pipeline_with_feedback_loop(
-            issue_text,
-            buggy_repo=prepared.buggy_repo,
-            fixed_repo=prepared.fixed_repo,
-            use_mock_llm=mock,
-            max_attempts=max_attempts,
-        )
-    else:
-        result = run_pipeline(
-            issue_text,
-            buggy_repo=prepared.buggy_repo,
-            fixed_repo=prepared.fixed_repo,
-            use_mock_llm=mock,
-        )
+    try:
+        if max_attempts is not None:
+            result = run_pipeline_with_feedback_loop(
+                issue_text,
+                buggy_repo=prepared.buggy_repo,
+                fixed_repo=prepared.fixed_repo,
+                use_mock_llm=provider == "mock",
+                max_attempts=max_attempts,
+                llm_provider=provider,
+            )
+        else:
+            result = run_pipeline(
+                issue_text,
+                buggy_repo=prepared.buggy_repo,
+                fixed_repo=prepared.fixed_repo,
+                use_mock_llm=provider == "mock",
+                llm_provider=provider,
+            )
+    except ValueError as exc:
+        _raise_cli_error(exc)
 
     payload = _build_swebench_result_payload(instance, prepared, result)
     output_path = _save_swebench_result(prepared.instance_id, payload)
