@@ -1,27 +1,27 @@
 # ECHO-Repro
 
-ECHO-Repro is a lightweight research prototype for environment-aware bug reproduction harness synthesis.
+ECHO-Repro 是一个轻量级研究原型，用于环境感知的缺陷复现 harness 合成。
 
-Given an issue description, optional logs/traces, and a local repository path, the MVP can:
+给定 issue 描述、可选日志/追踪信息，以及本地仓库路径，这个 MVP 可以：
 
-1. Extract a structured `BugSpec`
-2. Retrieve relevant source, test, and environment/config files
-3. Build a concise reproduction context
-4. Generate a minimal executable harness, usually `reproduce.py`
-5. Execute the harness on a buggy repo and optionally a fixed repo
-6. Repair or strengthen the harness in a feedback loop when needed
-7. Validate a Fail-to-Pass outcome
+1. 抽取结构化的 `BugSpec`
+2. 检索相关源码、测试文件和环境/配置文件
+3. 构建简洁的复现上下文
+4. 生成一个最小可执行 harness，通常是 `reproduce.py`
+5. 在 buggy 仓库上执行该 harness，并可选地在 fixed 仓库上执行
+6. 在需要时通过反馈循环修复 harness 或增强 oracle
+7. 验证是否满足 Fail-to-Pass
 
-The first version is intentionally simple and runs locally without a real LLM by default.
+第一版故意保持简单，默认不依赖真实 LLM，能够本地直接运行。
 
-## Why this exists
+## 项目目的
 
-Reproducing bugs across repositories often fails because issue text, source context, tests, and environment assumptions are scattered. ECHO-Repro provides a compact pipeline for turning those inputs into a runnable reproduction harness.
+跨仓库复现缺陷经常失败，因为 issue 文本、源码上下文、测试以及环境假设往往分散在不同位置。ECHO-Repro 的目标是提供一条紧凑的流水线，把这些输入转成一个可运行的复现 harness。
 
-## MVP Architecture
+## MVP 架构
 
 ```text
-Issue text + optional logs
+Issue 文本 + 可选日志
         |
         v
   bug_spec.extract_bug_spec
@@ -42,7 +42,7 @@ Issue text + optional logs
  validator.validate_fail_to_pass
 ```
 
-## Installation
+## 安装
 
 ```bash
 cd echo-repro
@@ -51,9 +51,9 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-## Quick Start
+## 快速开始
 
-Run the full mock pipeline:
+运行完整的 mock 流水线：
 
 ```bash
 echo-repro run-one \
@@ -63,7 +63,7 @@ echo-repro run-one \
   --mock
 ```
 
-Run the same flow with feedback-driven repair:
+运行带反馈修复循环的流程：
 
 ```bash
 echo-repro run-loop \
@@ -74,7 +74,7 @@ echo-repro run-loop \
   --mock
 ```
 
-Inspect the retrieval and concise context only:
+只查看检索结果和简洁上下文：
 
 ```bash
 echo-repro inspect-context \
@@ -82,22 +82,24 @@ echo-repro inspect-context \
   --repo examples/mock_buggy_repo
 ```
 
-Show the installed version:
+查看当前版本：
 
 ```bash
 echo-repro version
 ```
 
-Download the SWE-bench Lite `test` split into local JSONL:
+把 SWE-bench Lite 的 `test` split 下载成本地 JSONL：
 
 ```bash
 python scripts/download_swebench_lite.py
 ```
 
-This writes all instances to `data/swebench_lite.jsonl`, prints the total number
-of instances, and prints the first 5 `instance_id` values.
+该脚本会把所有实例写入 `data/swebench_lite.jsonl`，并打印：
 
-Prepare one SWE-bench instance into local buggy and fixed repositories:
+- 实例总数
+- 前 5 个 `instance_id`
+
+把一个 SWE-bench 实例准备成本地 buggy/fixed 仓库：
 
 ```bash
 echo-repro prepare-swebench \
@@ -106,7 +108,7 @@ echo-repro prepare-swebench \
   --workdir repos/
 ```
 
-Run one prepared SWE-bench instance through ECHO-Repro:
+对一个准备好的 SWE-bench 实例运行 ECHO-Repro：
 
 ```bash
 echo-repro run-swebench-one \
@@ -117,13 +119,13 @@ echo-repro run-swebench-one \
   --max-attempts 3
 ```
 
-This prepares the buggy/fixed repos, runs the reproduction pipeline, prints a
-compact summary, and saves the full JSON artifact to
-`outputs/<instance_id>/result.json`.
+这个命令会准备 buggy/fixed 仓库、运行复现流水线、打印简洁摘要，并把完整实验记录保存到：
 
-## Output Artifacts
+`outputs/<instance_id>/result.json`
 
-Each `run-swebench-one` execution writes a research-friendly record under:
+## 输出产物
+
+每次执行 `run-swebench-one` 都会在下面目录生成一份适合研究分析的记录：
 
 ```text
 outputs/{instance_id}/
@@ -135,56 +137,63 @@ outputs/{instance_id}/
   attempts/
 ```
 
-Key files:
+关键文件说明：
 
-- `result.json`: stable experiment record with `schema_version`
-- `concise_context.md`: exact context used for harness generation
-- `final_reproduce.py`: final harness after generation or repair
-- `attempts.jsonl`: one JSON record per generation/repair attempt
-- `prompts/`: prompt snapshots for BugSpec extraction and each harness attempt
-- `attempts/`: the harness code emitted at each attempt
+- `result.json`：稳定的实验记录，带 `schema_version`
+- `concise_context.md`：用于生成 harness 的完整上下文
+- `final_reproduce.py`：最终生成或修复后的 harness
+- `attempts.jsonl`：每次生成/修复尝试对应一条 JSON 记录
+- `prompts/`：BugSpec 抽取和每次 harness 尝试的 prompt 快照
+- `attempts/`：每次尝试产生的 harness 代码
 
-Use `result.json` to inspect:
+可以通过 `result.json` 检查：
 
-- instance metadata
-- run configuration
-- retrieved source/test/env files
-- final statuses and Fail-to-Pass outcome
-- artifact paths for downstream analysis
+- 实例元数据
+- 运行配置
+- 检索到的 source/test/env 文件
+- 最终状态以及是否满足 Fail-to-Pass
+- 其他产物文件路径
 
-This layout is designed to support ablation experiments, prompt comparisons,
-repair-loop analysis, and offline auditability of what the system actually ran.
+这套结构适合做：
 
-## Example Behavior
+- ablation experiments
+- prompt 对比
+- repair loop 分析
+- 离线审计系统实际执行了什么
 
-The included example models a bug where `buggy_module.divide(a, b)` returns `0` when `b == 0`, but the expected behavior is to raise `ZeroDivisionError`.
+## 示例行为
 
-The generated harness checks that:
+项目内置的示例模拟了一个简单 bug：
 
-- Buggy repo prints `Issue reproduced`
-- Fixed repo prints `Issue resolved`
+`buggy_module.divide(a, b)` 在 `b == 0` 时返回 `0`，但正确行为应当是抛出 `ZeroDivisionError`。
 
-## Module Guide
+生成出来的 harness 会检查：
 
-- `models.py`: typed payloads moving through the pipeline
-- `config.py`: environment-based configuration
-- `bug_spec.py`: issue-to-`BugSpec` extraction
-- `retriever.py`: simple keyword retrieval over source, test, and env files
-- `context_builder.py`: compact context assembly for harness generation
-- `harness_generator.py`: turns context into an executable Python harness
-- `feedback_loop.py`: repairs harnesses or strengthens their oracle using execution feedback
-- `repo_manager.py`: clones, checks out, copies, and patches repos for SWE-bench-style instance preparation
-- `executor.py`: safe-ish local write and subprocess execution helpers
-- `validator.py`: execution classification and Fail-to-Pass validation
-- `pipeline.py`: orchestration
-- `llm/`: pluggable LLM clients, including `MockLLMClient`
-- `utils/`: file and logging helpers
+- 在 buggy 仓库中打印 `Issue reproduced`
+- 在 fixed 仓库中打印 `Issue resolved`
 
-## LLM Configuration
+## 模块说明
 
-The MVP defaults to `MockLLMClient`, which requires no network access.
+- `models.py`：流水线中的类型化数据模型
+- `config.py`：基于环境变量的配置
+- `bug_spec.py`：把 issue 文本抽取成 `BugSpec`
+- `retriever.py`：对源码、测试和环境文件进行简单关键词检索
+- `context_builder.py`：构建紧凑复现上下文
+- `harness_generator.py`：把上下文转成可执行 Python harness
+- `feedback_loop.py`：根据执行反馈修复 harness 或增强 oracle
+- `repo_manager.py`：为 SWE-bench 风格实例执行 clone、checkout、copy 和 patch
+- `executor.py`：将 harness 写入仓库并通过子进程执行
+- `validator.py`：执行结果分类与 Fail-to-Pass 验证
+- `pipeline.py`：整体流程编排
+- `llm/`：可插拔 LLM 客户端，包含 `MockLLMClient`
+- `utils/`：文件和日志辅助工具
+- `result_writer.py`：把一次运行写成稳定实验记录和配套产物
 
-Use mock mode explicitly:
+## LLM 配置
+
+MVP 默认使用 `MockLLMClient`，不需要网络，也不需要 API key。
+
+显式使用 mock 模式：
 
 ```bash
 echo-repro run-swebench-one \
@@ -195,16 +204,16 @@ echo-repro run-swebench-one \
   --max-attempts 3
 ```
 
-An OpenAI-compatible endpoint can be used via environment variables:
+如果要使用 OpenAI-compatible 模式，可以通过环境变量配置：
 
 ```bash
 export OPENAI_API_KEY="..."
-export OPENAI_BASE_URL="https://api.openai.com/v1"  # optional
+export OPENAI_BASE_URL="https://api.openai.com/v1"  # 可选
 export OPENAI_MODEL="gpt-4o-mini"
 export OPENAI_TEMPERATURE="0.2"
 ```
 
-Then run with `--llm openai`:
+然后通过 `--llm openai` 运行：
 
 ```bash
 echo-repro run-swebench-one \
@@ -215,44 +224,45 @@ echo-repro run-swebench-one \
   --max-attempts 3
 ```
 
-`--mock` / `--no-mock` is still supported as a backward-compatible alias, but
-`--llm mock|openai` is the preferred interface.
+`--mock` / `--no-mock` 仍然保留为向后兼容别名，但更推荐使用：
 
-## Safety Note
+`--llm mock|openai`
 
-This project writes and executes generated code inside the target repository directory only.
+## 安全说明
 
-That is still not strong isolation. Production-grade evaluation should run generated harnesses inside Docker or another sandbox boundary before using this on untrusted repositories.
+本项目只会把生成代码写入目标仓库目录内部，并在该目录中执行。
 
-## Current MVP Limitations
+但这仍然不构成强隔离。真正用于生产级评测时，应该在 Docker 或类似沙箱边界内执行生成 harness，再用在不受信任的仓库上。
 
-- Retrieval is keyword-based only
-- Harness generation is single-candidate
-- Feedback repair is still single-candidate and heuristic
-- Execution is local subprocess-based, not containerized
-- Cross-language repos are not first-class
-- The mock LLM is heuristic and example-oriented
+## 当前 MVP 限制
 
-## Future Roadmap
+- 检索目前仍然只是关键词级别
+- harness 生成仍然是单候选
+- 反馈修复仍然是单候选且偏启发式
+- 执行仍然是本地 subprocess，不是容器化
+- 对跨语言仓库支持还不完善
+- mock LLM 仍然是规则驱动的简化实现
 
-- BM25 retrieval
-- Embedding retrieval
-- Function-level chunking
-- Docker sandbox execution
-- SWE-bench Lite integration
-- Multi-candidate ranking
+## 后续路线图
 
-## How To Connect To SWE-bench Lite Later
+- BM25 检索
+- embedding 检索
+- 函数级 chunking
+- Docker 沙箱执行
+- 更完整的 SWE-bench Lite 集成
+- 多候选排序
 
-The project now includes a lightweight adapter for SWE-bench-style JSONL files in `swebench_adapter.py`.
+## 之后如何进一步接入 SWE-bench Lite
 
-To create a local JSONL file from the public benchmark dataset, use:
+项目目前已经在 `swebench_adapter.py` 中支持了 SWE-bench 风格 JSONL 的轻量适配。
+
+如果要先从公开数据集生成本地 JSONL，可以使用：
 
 ```bash
 python scripts/download_swebench_lite.py
 ```
 
-You can preview one instance without downloading or executing the benchmark:
+如果只想预览某个实例，而不下载或执行完整 benchmark，可以运行：
 
 ```bash
 echo-repro swebench-preview \
@@ -260,17 +270,17 @@ echo-repro swebench-preview \
   --instance-id django__django-12345
 ```
 
-What this supports today:
+当前已经支持：
 
-- Reading JSONL instance files
-- Selecting a single instance by `instance_id`
-- Extracting issue text for ECHO-Repro inputs
-- Preparing a small stub with repo metadata
-- Preparing local buggy/fixed repos for a single instance from `repo`, `base_commit`, and `patch`
+- 读取 JSONL 实例文件
+- 通过 `instance_id` 选择单个实例
+- 提取 issue 文本作为 ECHO-Repro 输入
+- 准备带 repo metadata 的轻量 stub
+- 基于 `repo`、`base_commit` 和 `patch` 准备单实例的本地 buggy/fixed 仓库
 
-What to add later for real SWE-bench Lite workflows:
+之后可以继续补的方向：
 
-- Materialize buggy and fixed repos from benchmark metadata
-- Connect `problem_statement` directly into `run-one` or `run-loop`
-- Use `patch` and `test_patch` for richer validation and analysis
-- Add Docker-based execution before running generated harnesses at scale
+- 从 benchmark metadata 更完整地物化 buggy/fixed 仓库
+- 把 `problem_statement` 直接接到 `run-one` 或 `run-loop`
+- 利用 `patch` 和 `test_patch` 做更丰富的验证和分析
+- 在批量运行前加入 Docker 隔离执行
