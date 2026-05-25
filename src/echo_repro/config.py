@@ -15,6 +15,27 @@ class LLMSettings(BaseModel):
     model: str = Field(
         default_factory=lambda: os.getenv("OPENAI_MODEL", os.getenv("ECHO_REPRO_LLM_MODEL", "gpt-4o-mini"))
     )
+    anthropic_api_key: str = Field(
+        default_factory=lambda: os.getenv(
+            "ANTHROPIC_AUTH_TOKEN",
+            os.getenv("ANTHROPIC_API_KEY", os.getenv("ECHO_REPRO_ANTHROPIC_API_KEY", "")),
+        )
+    )
+    anthropic_base_url: str = Field(
+        default_factory=lambda: os.getenv(
+            "ANTHROPIC_BASE_URL",
+            os.getenv("ECHO_REPRO_ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
+        )
+    )
+    anthropic_model: str = Field(
+        default_factory=lambda: os.getenv(
+            "ANTHROPIC_MODEL",
+            os.getenv(
+                "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                os.getenv("ECHO_REPRO_ANTHROPIC_MODEL", "claude-3-5-sonnet-latest"),
+            ),
+        )
+    )
     temperature: float = Field(
         default_factory=lambda: float(os.getenv("OPENAI_TEMPERATURE", os.getenv("ECHO_REPRO_LLM_TEMPERATURE", "0.2")))
     )

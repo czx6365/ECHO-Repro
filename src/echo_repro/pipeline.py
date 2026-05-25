@@ -9,6 +9,7 @@ from echo_repro.environment import EnvironmentRepairManager
 from echo_repro.executor import run_harness, write_harness
 from echo_repro.feedback_loop import run_feedback_loop
 from echo_repro.harness_generator import generate_harness
+from echo_repro.llm.anthropic_client import AnthropicCompatibleLLMClient
 from echo_repro.llm.base import BaseLLMClient
 from echo_repro.llm.mock_client import MockLLMClient
 from echo_repro.llm.openai_client import OpenAICompatibleLLMClient
@@ -24,7 +25,19 @@ def _make_llm_client(use_mock_llm: bool = True, llm_provider: str | None = None)
         return MockLLMClient()
     if provider == "openai":
         return OpenAICompatibleLLMClient()
+    if provider == "anthropic":
+        return AnthropicCompatibleLLMClient()
     raise ValueError(f"Unsupported LLM provider: {provider}")
+
+
+def _client_model_name(llm_client: BaseLLMClient) -> str:
+    settings = getattr(llm_client, "settings", get_llm_settings())
+    return str(getattr(llm_client, "model_name", getattr(settings, "model", "")))
+
+
+def _client_temperature(llm_client: BaseLLMClient) -> float | None:
+    settings = getattr(llm_client, "settings", get_llm_settings())
+    return getattr(llm_client, "temperature", getattr(settings, "temperature", None))
 
 
 def run_pipeline(
@@ -61,8 +74,8 @@ def run_pipeline(
     validation = validate_fail_to_pass(buggy_execution, fixed_execution)
     return PipelineResult(
         llm_provider=llm_provider or ("mock" if use_mock_llm else "openai"),
-        llm_model=getattr(llm_client, "settings", get_llm_settings()).model,
-        llm_temperature=getattr(llm_client, "settings", get_llm_settings()).temperature,
+        llm_model=_client_model_name(llm_client),
+        llm_temperature=_client_temperature(llm_client),
         bug_spec_prompt=bug_spec_prompt,
         bug_spec_llm_metadata=bug_spec_llm_metadata,
         initial_harness_prompt=initial_harness_prompt,
@@ -107,8 +120,8 @@ def run_pipeline_with_feedback_loop(
         initial_prompt_text=initial_harness_prompt,
         initial_llm_metadata=initial_harness_llm_metadata,
         llm_provider=llm_provider or ("mock" if use_mock_llm else "openai"),
-        llm_model=getattr(llm_client, "settings", get_llm_settings()).model,
-        llm_temperature=getattr(llm_client, "settings", get_llm_settings()).temperature,
+        llm_model=_client_model_name(llm_client),
+        llm_temperature=_client_temperature(llm_client),
         bug_spec_prompt=bug_spec_prompt,
         bug_spec_llm_metadata=bug_spec_llm_metadata,
         environment_repair_manager=environment_repair_manager,

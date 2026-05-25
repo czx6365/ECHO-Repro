@@ -12,6 +12,7 @@ from echo_repro import __version__
 from echo_repro.bug_spec import extract_bug_spec
 from echo_repro.context_builder import build_concise_context
 from echo_repro.environment import EnvironmentRepairManager
+from echo_repro.llm.anthropic_client import AnthropicCompatibleLLMClient
 from echo_repro.llm.mock_client import MockLLMClient
 from echo_repro.llm.openai_client import OpenAICompatibleLLMClient
 from echo_repro.pipeline import run_pipeline, run_pipeline_with_feedback_loop
@@ -35,16 +36,22 @@ def _load_issue_text(issue_file: Path) -> str:
     return Path(issue_file).read_text(encoding="utf-8")
 
 
-def _get_client(use_mock: bool):
-    return MockLLMClient() if use_mock else OpenAICompatibleLLMClient()
-
-
 def _resolve_llm_provider(llm: str, mock: bool | None) -> str:
     if mock is True:
         return "mock"
     if mock is False:
         return "openai"
     return llm
+
+
+def _get_client_for_provider(provider: str):
+    if provider == "mock":
+        return MockLLMClient()
+    if provider == "openai":
+        return OpenAICompatibleLLMClient()
+    if provider == "anthropic":
+        return AnthropicCompatibleLLMClient()
+    raise ValueError(f"Unsupported LLM provider: {provider}")
 
 
 def _raise_cli_error(exc: ValueError) -> None:
@@ -158,7 +165,7 @@ def run_one(
     issue_file: Path = typer.Option(..., exists=True, help="Path to issue text file."),
     buggy_repo: Path = typer.Option(..., exists=True, file_okay=False, help="Buggy repository path."),
     fixed_repo: Path | None = typer.Option(None, exists=True, file_okay=False, help="Fixed repository path."),
-    llm: str = typer.Option("mock", "--llm", help="LLM provider: mock or openai."),
+    llm: str = typer.Option("mock", "--llm", help="LLM provider: mock, openai, or anthropic."),
     mock: bool | None = typer.Option(None, "--mock/--no-mock", help="Backward-compatible alias for --llm."),
 ) -> None:
     issue_text = _load_issue_text(issue_file)
@@ -182,7 +189,7 @@ def run_loop(
     buggy_repo: Path = typer.Option(..., exists=True, file_okay=False, help="Buggy repository path."),
     fixed_repo: Path | None = typer.Option(None, exists=True, file_okay=False, help="Fixed repository path."),
     max_attempts: int = typer.Option(3, min=1, help="Maximum feedback loop attempts."),
-    llm: str = typer.Option("mock", "--llm", help="LLM provider: mock or openai."),
+    llm: str = typer.Option("mock", "--llm", help="LLM provider: mock, openai, or anthropic."),
     mock: bool | None = typer.Option(None, "--mock/--no-mock", help="Backward-compatible alias for --llm."),
 ) -> None:
     issue_text = _load_issue_text(issue_file)
@@ -205,13 +212,13 @@ def run_loop(
 def inspect_context(
     issue_file: Path = typer.Option(..., exists=True, help="Path to issue text file."),
     repo: Path = typer.Option(..., exists=True, file_okay=False, help="Repository path."),
-    llm: str = typer.Option("mock", "--llm", help="LLM provider: mock or openai."),
+    llm: str = typer.Option("mock", "--llm", help="LLM provider: mock, openai, or anthropic."),
     mock: bool | None = typer.Option(None, "--mock/--no-mock", help="Backward-compatible alias for --llm."),
 ) -> None:
     issue_text = _load_issue_text(issue_file)
     provider = _resolve_llm_provider(llm, mock)
     try:
-        llm_client = _get_client(provider == "mock")
+        llm_client = _get_client_for_provider(provider)
     except ValueError as exc:
         _raise_cli_error(exc)
     bug_spec = extract_bug_spec(issue_text, llm_client)
@@ -283,7 +290,7 @@ def run_swebench_one(
     instances_file: Path = typer.Option(..., exists=True, help="Path to SWE-bench-style JSONL instances file."),
     instance_id: str = typer.Option(..., help="SWE-bench instance identifier."),
     workdir: Path = typer.Option(..., help="Directory for prepared buggy and fixed repos."),
-    llm: str = typer.Option("mock", "--llm", help="LLM provider: mock or openai."),
+    llm: str = typer.Option("mock", "--llm", help="LLM provider: mock, openai, or anthropic."),
     mock: bool | None = typer.Option(None, "--mock/--no-mock", help="Backward-compatible alias for --llm."),
     max_attempts: int | None = typer.Option(None, min=1, help="Use the feedback loop with this many attempts."),
     env_root: Path = typer.Option(Path("envs"), help="Directory for cached per-repository virtual environments."),
