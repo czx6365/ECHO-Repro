@@ -53,6 +53,7 @@ def write_preparation_failure_record(
             "env_files": [],
         },
         "artifacts": {},
+        "environment_profile": None,
         "environment_repairs": [],
         "attempts_summary": [],
         "final_result": {
@@ -217,6 +218,11 @@ def write_experiment_record(
             "attempts_path": str(attempts_jsonl_path),
             "prompts_dir": str(prompts_dir),
         },
+        "environment_profile": (
+            result.environment_profile.model_dump(mode="json")
+            if result.environment_profile
+            else None
+        ),
         "environment_repairs": [
             record["environment_repair"]
             for record in attempt_summaries

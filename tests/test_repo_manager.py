@@ -172,6 +172,18 @@ def test_prepare_swebench_repos_rejects_non_git_source(tmp_path: Path, monkeypat
         repo_manager.prepare_swebench_repos(instance, workdir=tmp_path / "prepared")
 
 
+def test_require_git_repo_rejects_parent_worktree_leakage(tmp_path: Path):
+    parent_repo = tmp_path / "parent"
+    _make_local_repo(parent_repo)
+    nested = parent_repo / "nested"
+    nested.mkdir()
+    (nested / ".git").mkdir()
+    (nested / ".git" / "HEAD").write_text("invalid\n", encoding="utf-8")
+
+    with pytest.raises(repo_manager.RepoPreparationError, match="work tree root"):
+        repo_manager.get_head_commit(nested)
+
+
 def test_prepare_swebench_repos_rejects_patch_with_no_diff(tmp_path: Path, monkeypatch):
     source_repo = tmp_path / "source_repo"
     base_commit, _ = _make_local_repo(source_repo)

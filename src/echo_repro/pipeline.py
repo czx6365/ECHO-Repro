@@ -5,7 +5,7 @@ import sys
 
 from echo_repro.bug_spec import extract_bug_spec
 from echo_repro.context_builder import build_concise_context
-from echo_repro.environment import EnvironmentRepairManager
+from echo_repro.environment import EnvironmentProfileManager, EnvironmentRepairManager
 from echo_repro.executor import run_harness, write_harness
 from echo_repro.feedback_loop import run_feedback_loop
 from echo_repro.harness_generator import generate_harness
@@ -98,7 +98,17 @@ def run_pipeline_with_feedback_loop(
     max_attempts: int = 3,
     llm_provider: str | None = None,
     environment_repair_manager: EnvironmentRepairManager | None = None,
+    environment_profile_manager: EnvironmentProfileManager | None = None,
 ) -> PipelineResult:
+    environment_profile = None
+    initial_python_executable = None
+    if environment_profile_manager:
+        environment_profile = environment_profile_manager.prepare_profile()
+        if environment_profile.ready and environment_profile.python_path:
+            initial_python_executable = environment_profile.python_path
+            if environment_repair_manager and environment_profile.env_path:
+                environment_repair_manager.env_path_override = environment_profile.env_path
+
     llm_client = _make_llm_client(use_mock_llm, llm_provider=llm_provider)
     bug_spec = extract_bug_spec(issue_text, llm_client)
     bug_spec_prompt = llm_client.last_prompt
@@ -125,4 +135,6 @@ def run_pipeline_with_feedback_loop(
         bug_spec_prompt=bug_spec_prompt,
         bug_spec_llm_metadata=bug_spec_llm_metadata,
         environment_repair_manager=environment_repair_manager,
+        initial_python_executable=initial_python_executable,
+        environment_profile=environment_profile,
     )

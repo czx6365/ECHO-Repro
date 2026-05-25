@@ -71,6 +71,14 @@ def _require_git_repo(repo_dir: Path) -> None:
             f"stderr:\n{result.stderr}"
         )
 
+    top_level = run_cmd(["git", "rev-parse", "--show-toplevel"], cwd=repo_dir)
+    if top_level.returncode != 0 or Path(top_level.stdout.strip()).resolve() != repo_dir.resolve():
+        raise RepoPreparationError(
+            f"Prepared path is not the git work tree root: {repo_dir}\n"
+            f"stdout:\n{top_level.stdout}\n"
+            f"stderr:\n{top_level.stderr}"
+        )
+
 
 def get_head_commit(repo_dir: Path) -> str:
     _require_git_repo(repo_dir)

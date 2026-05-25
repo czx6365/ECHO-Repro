@@ -71,6 +71,30 @@ class EnvironmentRepairResult(BaseModel):
     reason: str = ""
 
 
+class EnvironmentProfileResult(BaseModel):
+    repo: str = ""
+    repo_slug: str = ""
+    profile_key: str = ""
+    env_root: Path | None = None
+    env_path: Path | None = None
+    python_path: Path | None = None
+    profile_marker: Path | None = None
+    detected_python: str = ""
+    current_python: str = ""
+    dependency_hash: str = ""
+    dependency_files: list[Path] = Field(default_factory=list)
+    heavy_install_allowed: bool = False
+    attempted: bool = False
+    ready: bool = False
+    reused_existing: bool = False
+    install_command: list[str] = Field(default_factory=list)
+    build_repo_paths: list[Path] = Field(default_factory=list)
+    returncode: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    reason: str = ""
+
+
 class LLMCallMetadata(BaseModel):
     provider: str = ""
     model: str = ""
@@ -131,4 +155,5 @@ class PipelineResult(BaseModel):
     buggy_execution: ExecutionResult
     fixed_execution: ExecutionResult | None = None
     validation: ValidationResult
+    environment_profile: EnvironmentProfileResult | None = None
     attempts: list[FeedbackLoopAttempt] = Field(default_factory=list)

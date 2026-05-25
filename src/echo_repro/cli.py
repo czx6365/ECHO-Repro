@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import typer
@@ -11,7 +12,7 @@ from rich.table import Table
 from echo_repro import __version__
 from echo_repro.bug_spec import extract_bug_spec
 from echo_repro.context_builder import build_concise_context
-from echo_repro.environment import EnvironmentRepairManager
+from echo_repro.environment import EnvironmentProfileManager, EnvironmentRepairManager
 from echo_repro.llm.anthropic_client import AnthropicCompatibleLLMClient
 from echo_repro.llm.mock_client import MockLLMClient
 from echo_repro.llm.openai_client import OpenAICompatibleLLMClient
@@ -130,6 +131,13 @@ def _print_swebench_run_result(instance: dict, prepared, result, output_path: Pa
     console.print(table)
 
     console.print(Panel(str(prepared.buggy_repo / result.harness_candidate.filename), title="Generated Harness Path"))
+    if result.environment_profile:
+        console.print(
+            Panel(
+                result.environment_profile.model_dump_json(indent=2),
+                title="Environment Profile",
+            )
+        )
     console.print(
         Panel(
             json.dumps(
@@ -294,6 +302,9 @@ def run_swebench_one(
     mock: bool | None = typer.Option(None, "--mock/--no-mock", help="Backward-compatible alias for --llm."),
     max_attempts: int | None = typer.Option(None, min=1, help="Use the feedback loop with this many attempts."),
     env_root: Path = typer.Option(Path("envs"), help="Directory for cached per-repository virtual environments."),
+    env_python: Path | None = typer.Option(None, "--env-python", exists=True, dir_okay=False, help="Python interpreter used to create environment profiles."),
+    env_profile: bool = typer.Option(True, "--env-profile/--no-env-profile", help="Detect and reuse repo-level environment profiles."),
+    allow_env_install: bool = typer.Option(False, "--allow-env-install/--no-allow-env-install", help="Allow creating/installing cached repo environments."),
     cache_dir: Path = typer.Option(Path("repos/cache"), help="Directory for cached repository mirrors."),
     output_root: Path = typer.Option(Path("outputs"), help="Directory for experiment result artifacts."),
 ) -> None:
@@ -315,6 +326,18 @@ def run_swebench_one(
 
     try:
         if max_attempts is not None:
+            environment_profile_manager = (
+                EnvironmentProfileManager(
+                    repo=prepared.repo,
+                    repo_path=prepared.buggy_repo,
+                    extra_repo_paths=[prepared.fixed_repo],
+                    env_root=env_root,
+                    base_python=env_python or Path(sys.executable),
+                    allow_install=allow_env_install,
+                )
+                if env_profile
+                else None
+            )
             result = run_pipeline_with_feedback_loop(
                 issue_text,
                 buggy_repo=prepared.buggy_repo,
@@ -326,6 +349,7 @@ def run_swebench_one(
                     repo_slug=prepared.repo,
                     env_root=env_root,
                 ),
+                environment_profile_manager=environment_profile_manager,
             )
         else:
             result = run_pipeline(

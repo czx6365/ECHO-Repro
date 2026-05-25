@@ -10,6 +10,7 @@ from echo_repro.executor import run_harness, write_harness
 from echo_repro.llm.base import BaseLLMClient
 from echo_repro.models import (
     BugSpec,
+    EnvironmentProfileResult,
     ExecutionResult,
     FeedbackLoopAttempt,
     HarnessCandidate,
@@ -78,6 +79,8 @@ def run_feedback_loop(
     bug_spec_prompt: str = "",
     bug_spec_llm_metadata: LLMCallMetadata | None = None,
     environment_repair_manager: EnvironmentRepairManager | None = None,
+    initial_python_executable: Path | None = None,
+    environment_profile: EnvironmentProfileResult | None = None,
 ) -> PipelineResult:
     harness_candidate = initial_harness
     attempts: list[FeedbackLoopAttempt] = []
@@ -88,7 +91,7 @@ def run_feedback_loop(
     next_note = "Initial harness generation."
     current_prompt_text = initial_prompt_text
     current_llm_metadata = initial_llm_metadata or LLMCallMetadata()
-    python_executable = Path(sys.executable)
+    python_executable = Path(initial_python_executable or sys.executable)
 
     for attempt_index in range(1, max_attempts + 1):
         buggy_execution = _run_once(Path(buggy_repo), harness_candidate, python_executable)
@@ -208,5 +211,6 @@ def run_feedback_loop(
         buggy_execution=last_buggy_execution,
         fixed_execution=last_fixed_execution,
         validation=validation,
+        environment_profile=environment_profile,
         attempts=attempts,
     )
