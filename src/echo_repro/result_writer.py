@@ -10,6 +10,63 @@ from echo_repro.validator import classify_execution
 SCHEMA_VERSION = "0.2"
 
 
+def write_preparation_failure_record(
+    *,
+    instance: dict,
+    error: Exception,
+    workdir: Path,
+    cache_dir: Path | None = None,
+    output_root: Path = Path("outputs"),
+) -> Path:
+    instance_id = str(instance.get("instance_id", ""))
+    output_dir = Path(output_root) / instance_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result_json_path = output_dir / "result.json"
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "created_at": datetime.now(UTC).isoformat(),
+        "instance_metadata": {
+            "instance_id": instance_id,
+            "repo": instance.get("repo", ""),
+            "base_commit": instance.get("base_commit", ""),
+            "patch_applied": False,
+            "repo_validated": False,
+            "buggy_commit": "",
+            "fixed_commit": "",
+            "fixed_diff_stat": "",
+            "repo_cache_path": "",
+            "workdir": str(workdir),
+            "cache_dir": str(cache_dir) if cache_dir else "",
+        },
+        "run_config": {
+            "llm_provider": None,
+            "model": None,
+            "temperature": None,
+            "max_attempts": None,
+            "retrieval_mode": "keyword",
+            "executor": "subprocess",
+        },
+        "bug_spec": None,
+        "retrieval": {
+            "source_files": [],
+            "test_files": [],
+            "env_files": [],
+        },
+        "artifacts": {},
+        "environment_repairs": [],
+        "attempts_summary": [],
+        "final_result": {
+            "buggy_status": "repo_error",
+            "fixed_status": None,
+            "is_f2p": False,
+            "failure_category": "repo_error",
+            "reason": str(error),
+        },
+    }
+    result_json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return result_json_path
+
+
 def _stage_for_action(action: str) -> str:
     if action == "initial_generation":
         return "initial_generation"
@@ -107,6 +164,11 @@ def write_experiment_record(
                     else None
                 ),
                 "llm_metadata": attempt.llm_metadata.model_dump(mode="json"),
+                "environment_repair": (
+                    attempt.environment_repair.model_dump(mode="json")
+                    if attempt.environment_repair
+                    else None
+                ),
             }
             handle.write(json.dumps(record) + "\n")
             attempt_summaries.append(record)
@@ -129,6 +191,11 @@ def write_experiment_record(
             "repo": prepared.repo,
             "base_commit": prepared.base_commit,
             "patch_applied": prepared.patch_applied,
+            "repo_validated": prepared.repo_validated,
+            "buggy_commit": prepared.buggy_commit,
+            "fixed_commit": prepared.fixed_commit,
+            "fixed_diff_stat": prepared.fixed_diff_stat,
+            "repo_cache_path": str(prepared.repo_cache_path) if prepared.repo_cache_path else "",
         },
         "run_config": {
             "llm_provider": result.llm_provider,
@@ -150,6 +217,11 @@ def write_experiment_record(
             "attempts_path": str(attempts_jsonl_path),
             "prompts_dir": str(prompts_dir),
         },
+        "environment_repairs": [
+            record["environment_repair"]
+            for record in attempt_summaries
+            if record["environment_repair"] is not None
+        ],
         "attempts_summary": attempt_summaries,
         "final_result": final_result,
     }

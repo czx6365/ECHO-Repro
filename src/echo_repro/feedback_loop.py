@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shlex
 import sys
 
+from echo_repro.code_cleaner import clean_generated_python
+from echo_repro.environment import EnvironmentRepairManager
 from echo_repro.executor import run_harness, write_harness
 from echo_repro.llm.base import BaseLLMClient
 from echo_repro.models import (
@@ -26,10 +29,10 @@ def repair_harness(
     strengthen_oracle: bool = False,
 ) -> HarnessCandidate:
     if strengthen_oracle:
-        code = llm_client.strengthen_oracle(concise_context, harness_candidate.code, feedback)
+        code = clean_generated_python(llm_client.strengthen_oracle(concise_context, harness_candidate.code, feedback))
         rationale = "Harness oracle strengthened from execution feedback."
     else:
-        code = llm_client.repair_harness(concise_context, harness_candidate.code, feedback)
+        code = clean_generated_python(llm_client.repair_harness(concise_context, harness_candidate.code, feedback))
         rationale = "Harness repaired from execution feedback."
     return HarnessCandidate(
         filename=harness_candidate.filename,
@@ -38,11 +41,11 @@ def repair_harness(
     )
 
 
-def _run_once(repo_path: Path, harness_candidate: HarnessCandidate) -> ExecutionResult:
+def _run_once(repo_path: Path, harness_candidate: HarnessCandidate, python_executable: Path) -> ExecutionResult:
     write_harness(repo_path, harness_candidate, filename=harness_candidate.filename)
     return run_harness(
         repo_path,
-        command=f"{sys.executable} {harness_candidate.filename}",
+        command=f"{shlex.quote(str(python_executable))} {shlex.quote(harness_candidate.filename)}",
     )
 
 
@@ -74,6 +77,7 @@ def run_feedback_loop(
     llm_temperature: float | None = None,
     bug_spec_prompt: str = "",
     bug_spec_llm_metadata: LLMCallMetadata | None = None,
+    environment_repair_manager: EnvironmentRepairManager | None = None,
 ) -> PipelineResult:
     harness_candidate = initial_harness
     attempts: list[FeedbackLoopAttempt] = []
@@ -84,18 +88,23 @@ def run_feedback_loop(
     next_note = "Initial harness generation."
     current_prompt_text = initial_prompt_text
     current_llm_metadata = initial_llm_metadata or LLMCallMetadata()
+    python_executable = Path(sys.executable)
 
     for attempt_index in range(1, max_attempts + 1):
-        buggy_execution = _run_once(Path(buggy_repo), harness_candidate)
+        buggy_execution = _run_once(Path(buggy_repo), harness_candidate, python_executable)
         buggy_status = classify_execution(buggy_execution)
         fixed_execution = None
         fixed_status = None
+        environment_repair = None
         validation = validate_fail_to_pass(buggy_execution)
 
         if buggy_status == "reproduced" and fixed_repo:
-            fixed_execution = _run_once(Path(fixed_repo), harness_candidate)
+            fixed_execution = _run_once(Path(fixed_repo), harness_candidate, python_executable)
             fixed_status = classify_execution(fixed_execution)
             validation = validate_fail_to_pass(buggy_execution, fixed_execution)
+
+        if buggy_status == "dependency_error" and environment_repair_manager:
+            environment_repair = environment_repair_manager.repair_dependency(buggy_execution)
 
         attempts.append(
             FeedbackLoopAttempt(
@@ -109,6 +118,7 @@ def run_feedback_loop(
                 buggy_status=buggy_status,
                 fixed_execution=fixed_execution,
                 fixed_status=fixed_status,
+                environment_repair=environment_repair,
             )
         )
 
@@ -121,7 +131,23 @@ def run_feedback_loop(
         if attempt_index == max_attempts:
             break
 
-        if buggy_status in {"syntax_error", "import_error", "file_error"}:
+        if buggy_status == "dependency_error" and environment_repair_manager:
+            if environment_repair and environment_repair.success and environment_repair.python_path:
+                python_executable = environment_repair.python_path
+                next_action = "environment_repair"
+                next_note = (
+                    f"Installed {environment_repair.package} for missing module "
+                    f"{environment_repair.missing_module}."
+                )
+                current_prompt_text = ""
+                current_llm_metadata = LLMCallMetadata()
+                continue
+            break
+
+        if buggy_status in {"dependency_error", "environment_error", "repo_error", "patch_error"}:
+            break
+
+        if buggy_status == "harness_error":
             harness_candidate = repair_harness(
                 concise_context,
                 harness_candidate,

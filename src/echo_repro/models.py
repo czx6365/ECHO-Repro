@@ -36,9 +36,12 @@ class HarnessCandidate(BaseModel):
 ExecutionStatus = Literal[
     "reproduced",
     "resolved",
-    "syntax_error",
-    "import_error",
-    "file_error",
+    "repo_error",
+    "patch_error",
+    "environment_error",
+    "dependency_error",
+    "harness_error",
+    "oracle_error",
     "timeout",
     "other",
 ]
@@ -52,6 +55,20 @@ class ExecutionResult(BaseModel):
     stderr: str
     harness_path: Path | None = None
     timed_out: bool = False
+
+
+class EnvironmentRepairResult(BaseModel):
+    attempted: bool = False
+    success: bool = False
+    missing_module: str = ""
+    package: str = ""
+    env_path: Path | None = None
+    python_path: Path | None = None
+    install_command: list[str] = Field(default_factory=list)
+    returncode: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    reason: str = ""
 
 
 class LLMCallMetadata(BaseModel):
@@ -78,6 +95,11 @@ class PreparedRepos(BaseModel):
     buggy_repo: Path
     fixed_repo: Path
     patch_applied: bool = False
+    repo_validated: bool = False
+    buggy_commit: str = ""
+    fixed_commit: str = ""
+    fixed_diff_stat: str = ""
+    repo_cache_path: Path | None = None
 
 
 class FeedbackLoopAttempt(BaseModel):
@@ -91,6 +113,7 @@ class FeedbackLoopAttempt(BaseModel):
     buggy_status: ExecutionStatus
     fixed_execution: ExecutionResult | None = None
     fixed_status: ExecutionStatus | None = None
+    environment_repair: EnvironmentRepairResult | None = None
 
 
 class PipelineResult(BaseModel):

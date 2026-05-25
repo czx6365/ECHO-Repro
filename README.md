@@ -99,14 +99,40 @@ python scripts/download_swebench_lite.py
 - 实例总数
 - 前 5 个 `instance_id`
 
+建立一个固定的小规模真实实验集：
+
+```bash
+python scripts/create_swebench_sample.py \
+  --instances-file data/swebench_lite.jsonl \
+  --output-file data/swebench_lite_small.jsonl \
+  --sample-size 20
+```
+
+该脚本会优先保留 `astropy__astropy-12907` 作为 motivating example，并按仓库轮转补齐样本，避免小样本被单个仓库占满。
+
+汇总小实验当前运行状态：
+
+```bash
+python scripts/summarize_swebench_experiment.py \
+  --instances-file data/swebench_lite_small.jsonl \
+  --outputs-dir outputs \
+  --output-md outputs/swebench_lite_small_summary.md \
+  --output-csv outputs/swebench_lite_small_summary.csv
+```
+
+汇总表包含：`prepared?`、`env ready?`、`reproduced?`、`fixed passed?`、`failure category`、`cost` 和 `attempts`。
+
 把一个 SWE-bench 实例准备成本地 buggy/fixed 仓库：
 
 ```bash
 echo-repro prepare-swebench \
   --instances-file data/swebench_lite.jsonl \
   --instance-id django__django-12345 \
-  --workdir repos/
+  --workdir repos/ \
+  --cache-dir repos/cache
 ```
+
+`--cache-dir` 默认是 `repos/cache`。ECHO-Repro 会为每个仓库维护一个本地 cache，例如 `repos/cache/astropy__astropy`，首次遇到某个 commit 时执行 `git fetch --depth=1 origin <commit>`，后续实例直接从 cache copy/checkout，避免 20 条小实验反复卡在完整 clone 阶段。
 
 对一个准备好的 SWE-bench 实例运行 ECHO-Repro：
 
@@ -115,6 +141,7 @@ echo-repro run-swebench-one \
   --instances-file data/swebench_lite.jsonl \
   --instance-id django__django-12345 \
   --workdir repos/ \
+  --cache-dir repos/cache \
   --mock \
   --max-attempts 3
 ```
@@ -181,7 +208,7 @@ outputs/{instance_id}/
 - `context_builder.py`：构建紧凑复现上下文
 - `harness_generator.py`：把上下文转成可执行 Python harness
 - `feedback_loop.py`：根据执行反馈修复 harness 或增强 oracle
-- `repo_manager.py`：为 SWE-bench 风格实例执行 clone、checkout、copy 和 patch
+- `repo_manager.py`：为 SWE-bench 风格实例执行 repo cache、shallow fetch、checkout、copy 和 patch
 - `executor.py`：将 harness 写入仓库并通过子进程执行
 - `validator.py`：执行结果分类与 Fail-to-Pass 验证
 - `pipeline.py`：整体流程编排
@@ -200,6 +227,7 @@ echo-repro run-swebench-one \
   --instances-file data/swebench_lite.jsonl \
   --instance-id django__django-12345 \
   --workdir repos/ \
+  --cache-dir repos/cache \
   --llm mock \
   --max-attempts 3
 ```
@@ -220,6 +248,7 @@ echo-repro run-swebench-one \
   --instances-file data/swebench_lite.jsonl \
   --instance-id django__django-12345 \
   --workdir repos/ \
+  --cache-dir repos/cache \
   --llm openai \
   --max-attempts 3
 ```
@@ -239,9 +268,24 @@ echo-repro run-swebench-one \
 - 检索目前仍然只是关键词级别
 - harness 生成仍然是单候选
 - 反馈修复仍然是单候选且偏启发式
+- 会自动清理 LLM 输出中的 Markdown code fence，但还没有完整的代码规范化/静态修复流程
 - 执行仍然是本地 subprocess，不是容器化
 - 对跨语言仓库支持还不完善
 - mock LLM 仍然是规则驱动的简化实现
+
+## 真实仓库环境策略
+
+SWE-bench Lite 有 300 个实例，但不建议一开始为 300 个实例逐个完整安装环境。更现实的策略是：
+
+- 先按仓库聚类：同一个 `repo` 共享一套基础环境，例如 `astropy/astropy` 只准备一次基础 venv
+- 按需安装：先运行 harness，只有遇到 `dependency_error` 时再解析缺失包并补装
+- 缓存环境：把环境缓存到 `envs/{repo_slug}/`，多个实例复用
+- 优先最小依赖：先安装项目的核心运行依赖，不先跑完整测试依赖矩阵
+- 记录失败：如果依赖需要系统库或编译失败，把它记录到 `result.json` 的 failure category，留给后续批处理策略
+
+对于当前 `astropy__astropy-12907`，失败点是缺少运行依赖 `erfa`。这类问题应该通过“按需补装 + 环境复用”解决，而不是为所有实例提前全量安装。
+
+当前实现中，`run-swebench-one --max-attempts ...` 会启用 Environment Repair Loop：如果 buggy 执行被分类为 `dependency_error`，系统会解析缺失模块，映射到 pip 包名，在 `envs/{repo_slug}/` 下创建或复用 venv，安装后用该 venv 的 Python 重跑 harness。安装结果会写入 `result.json` 的 `environment_repairs` 和对应 attempt 记录。
 
 ## 后续路线图
 

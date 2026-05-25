@@ -5,7 +5,8 @@ from echo_repro.context_builder import build_concise_context
 from echo_repro.feedback_loop import run_feedback_loop
 from echo_repro.harness_generator import generate_harness
 from echo_repro.llm.mock_client import MockLLMClient
-from echo_repro.models import ExecutionResult
+from echo_repro.models import EnvironmentRepairResult, ExecutionResult
+import echo_repro.feedback_loop as feedback_loop_module
 from echo_repro.retriever import retrieve_context
 from echo_repro.validator import classify_execution
 
@@ -47,12 +48,12 @@ def test_syntax_error_repair_path_succeeds():
         max_attempts=3,
     )
 
-    assert result.attempts[0].buggy_status == "syntax_error"
+    assert result.attempts[0].buggy_status == "harness_error"
     assert any(attempt.action == "repair_harness" for attempt in result.attempts[1:])
     assert result.validation.success is True
 
 
-def test_import_error_classification_detected():
+def test_dependency_error_classification_detected():
     result = ExecutionResult(
         repo_path=Path("examples/mock_buggy_repo"),
         command="python reproduce.py",
@@ -61,7 +62,110 @@ def test_import_error_classification_detected():
         stderr="ModuleNotFoundError: No module named 'missing_module'",
         timed_out=False,
     )
-    assert classify_execution(result) == "import_error"
+    assert classify_execution(result) == "dependency_error"
+
+
+def test_environment_error_classification_detected():
+    result = ExecutionResult(
+        repo_path=Path("examples/mock_buggy_repo"),
+        command="python reproduce.py",
+        returncode=1,
+        stdout="",
+        stderr="ImportError: cannot import name '_parse_times' from partially initialized module 'astropy.time'",
+        timed_out=False,
+    )
+    assert classify_execution(result) == "environment_error"
+
+
+class MissingDependencyMockLLM(MockLLMClient):
+    def generate_harness(self, concise_context: str) -> str:
+        return "import missing_module\n"
+
+
+def test_feedback_loop_does_not_repair_dependency_errors():
+    _, _, bug_spec, retrieved_context, concise_context = _build_context()
+    llm_client = MissingDependencyMockLLM()
+    initial_harness = generate_harness(concise_context, llm_client)
+
+    result = run_feedback_loop(
+        bug_spec=bug_spec,
+        retrieved_context=retrieved_context,
+        concise_context=concise_context,
+        initial_harness=initial_harness,
+        llm_client=llm_client,
+        buggy_repo=Path("examples/mock_buggy_repo"),
+        fixed_repo=Path("examples/mock_fixed_repo"),
+        max_attempts=3,
+    )
+
+    assert len(result.attempts) == 1
+    assert result.attempts[0].buggy_status == "dependency_error"
+    assert result.validation.success is False
+
+
+class FakeEnvironmentRepairManager:
+    def __init__(self, python_path: Path):
+        self.python_path = python_path
+
+    def repair_dependency(self, result: ExecutionResult) -> EnvironmentRepairResult:
+        return EnvironmentRepairResult(
+            attempted=True,
+            success=True,
+            missing_module="missing_module",
+            package="missing-module",
+            env_path=self.python_path.parent.parent,
+            python_path=self.python_path,
+            install_command=[str(self.python_path), "-m", "pip", "install", "missing-module"],
+            returncode=0,
+            stdout="installed",
+            reason="Dependency installed.",
+        )
+
+
+def test_feedback_loop_retries_after_successful_environment_repair(tmp_path: Path, monkeypatch):
+    _, _, bug_spec, retrieved_context, concise_context = _build_context()
+    llm_client = MissingDependencyMockLLM()
+    initial_harness = generate_harness(concise_context, llm_client)
+    repaired_python = tmp_path / "envs" / "demo" / "bin" / "python"
+
+    def fake_run_harness(repo_path: Path, command: str | None = None, timeout: int = 30) -> ExecutionResult:
+        assert command is not None
+        if str(repaired_python) not in command:
+            return ExecutionResult(
+                repo_path=repo_path,
+                command=command,
+                returncode=1,
+                stdout="",
+                stderr="ModuleNotFoundError: No module named 'missing_module'",
+            )
+        stdout = "Issue resolved\n" if repo_path.name == "mock_fixed_repo" else "Issue reproduced\n"
+        return ExecutionResult(
+            repo_path=repo_path,
+            command=command,
+            returncode=0,
+            stdout=stdout,
+            stderr="",
+        )
+
+    monkeypatch.setattr(feedback_loop_module, "run_harness", fake_run_harness)
+
+    result = run_feedback_loop(
+        bug_spec=bug_spec,
+        retrieved_context=retrieved_context,
+        concise_context=concise_context,
+        initial_harness=initial_harness,
+        llm_client=llm_client,
+        buggy_repo=Path("examples/mock_buggy_repo"),
+        fixed_repo=Path("examples/mock_fixed_repo"),
+        max_attempts=3,
+        environment_repair_manager=FakeEnvironmentRepairManager(repaired_python),
+    )
+
+    assert result.attempts[0].buggy_status == "dependency_error"
+    assert result.attempts[0].environment_repair is not None
+    assert result.attempts[0].environment_repair.success is True
+    assert result.attempts[1].action == "environment_repair"
+    assert result.validation.success is True
 
 
 def test_feedback_loop_stops_at_max_attempts():
@@ -82,7 +186,7 @@ def test_feedback_loop_stops_at_max_attempts():
 
     assert len(result.attempts) == 2
     assert result.validation.success is False
-    assert result.validation.buggy_status == "other"
+    assert result.validation.buggy_status == "oracle_error"
 
 
 def test_successful_fail_to_pass_after_repair():
@@ -104,5 +208,5 @@ def test_successful_fail_to_pass_after_repair():
     assert result.validation.success is True
     assert result.validation.buggy_status == "reproduced"
     assert result.validation.fixed_status == "resolved"
-    assert result.attempts[0].buggy_status == "syntax_error"
+    assert result.attempts[0].buggy_status == "harness_error"
     assert result.attempts[-1].fixed_status == "resolved"

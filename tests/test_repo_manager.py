@@ -1,5 +1,8 @@
-import json
 from pathlib import Path
+import shutil
+import sys
+
+import pytest
 
 import echo_repro.repo_manager as repo_manager
 
@@ -72,6 +75,51 @@ def test_apply_patch_applies_small_patch(tmp_path: Path):
     assert (repo_dir / "sample.txt").read_text(encoding="utf-8") == "fixed\n"
 
 
+def test_repo_slug_sanitizes_repo_names():
+    assert repo_manager.repo_slug("astropy/astropy") == "astropy__astropy"
+    assert repo_manager.repo_slug("  ") == "unknown_repo"
+
+
+def test_fetch_error_retry_classifier_handles_http2_noise():
+    assert repo_manager.is_retryable_fetch_error("Error in the HTTP2 framing layer") is True
+    assert repo_manager.is_retryable_fetch_error("fatal: repository not found") is False
+
+
+def test_prepare_swebench_repos_uses_cache_and_reuses_cached_commit(tmp_path: Path):
+    source_repo = tmp_path / "source_repo"
+    base_commit, patch_text = _make_local_repo(source_repo)
+    cache_dir = tmp_path / "cache"
+
+    instance = {
+        "instance_id": "demo__repo-cache",
+        "repo": str(source_repo),
+        "base_commit": base_commit,
+        "patch": patch_text,
+    }
+
+    prepared = repo_manager.prepare_swebench_repos(
+        instance,
+        workdir=tmp_path / "prepared",
+        cache_dir=cache_dir,
+    )
+
+    expected_cache_path = cache_dir / repo_manager.repo_slug(str(source_repo))
+    assert prepared.repo_cache_path == expected_cache_path
+    assert repo_manager.has_commit(expected_cache_path, base_commit) is True
+    assert (prepared.buggy_repo / "sample.txt").read_text(encoding="utf-8") == "base\n"
+    assert (prepared.fixed_repo / "sample.txt").read_text(encoding="utf-8") == "fixed\n"
+
+    shutil.rmtree(source_repo)
+    prepared_again = repo_manager.prepare_swebench_repos(
+        instance,
+        workdir=tmp_path / "prepared_again",
+        cache_dir=cache_dir,
+    )
+
+    assert prepared_again.repo_cache_path == expected_cache_path
+    assert (prepared_again.buggy_repo / "sample.txt").read_text(encoding="utf-8") == "base\n"
+
+
 def test_prepare_swebench_repos_with_mocked_clone(tmp_path: Path, monkeypatch):
     source_repo = tmp_path / "source_repo"
     base_commit, patch_text = _make_local_repo(source_repo)
@@ -93,7 +141,76 @@ def test_prepare_swebench_repos_with_mocked_clone(tmp_path: Path, monkeypatch):
     assert prepared.repo == "demo/repo"
     assert prepared.base_commit == base_commit
     assert prepared.patch_applied is True
+    assert prepared.repo_validated is True
+    assert prepared.buggy_commit == base_commit
+    assert prepared.fixed_commit == base_commit
+    assert "sample.txt" in prepared.fixed_diff_stat
     assert prepared.buggy_repo.exists()
     assert prepared.fixed_repo.exists()
     assert (prepared.buggy_repo / "sample.txt").read_text(encoding="utf-8") == "base\n"
     assert (prepared.fixed_repo / "sample.txt").read_text(encoding="utf-8") == "fixed\n"
+
+
+def test_prepare_swebench_repos_rejects_non_git_source(tmp_path: Path, monkeypatch):
+    source_repo = tmp_path / "source_repo"
+    source_repo.mkdir()
+    (source_repo / "sample.txt").write_text("base\n", encoding="utf-8")
+
+    def fake_clone(repo: str, target_dir: Path) -> Path:
+        return repo_manager.copy_repo(source_repo, target_dir)
+
+    monkeypatch.setattr(repo_manager, "clone_repo", fake_clone)
+
+    instance = {
+        "instance_id": "demo__repo-no-git",
+        "repo": "demo/repo",
+        "base_commit": "abc123",
+        "patch": "non-empty patch",
+    }
+
+    with pytest.raises(repo_manager.RepoPreparationError, match="missing .git"):
+        repo_manager.prepare_swebench_repos(instance, workdir=tmp_path / "prepared")
+
+
+def test_prepare_swebench_repos_rejects_patch_with_no_diff(tmp_path: Path, monkeypatch):
+    source_repo = tmp_path / "source_repo"
+    base_commit, _ = _make_local_repo(source_repo)
+
+    def fake_clone(repo: str, target_dir: Path) -> Path:
+        return repo_manager.copy_repo(source_repo, target_dir)
+
+    def fake_apply_patch(repo_dir: Path, patch_text: str) -> bool:
+        return True
+
+    monkeypatch.setattr(repo_manager, "clone_repo", fake_clone)
+    monkeypatch.setattr(repo_manager, "apply_patch", fake_apply_patch)
+
+    instance = {
+        "instance_id": "demo__repo-no-diff",
+        "repo": "demo/repo",
+        "base_commit": base_commit,
+        "patch": "non-empty patch",
+    }
+
+    with pytest.raises(repo_manager.RepoPreparationError, match="produced no tracked diff"):
+        repo_manager.prepare_swebench_repos(instance, workdir=tmp_path / "prepared")
+
+
+def test_run_cmd_converts_timeout_to_failed_result():
+    result = repo_manager.run_cmd(
+        [sys.executable, "-c", "import time; time.sleep(2)"],
+        timeout=1,
+    )
+
+    assert result.returncode == 124
+    assert "timed out" in result.stderr
+
+
+def test_run_cmd_timeout_can_be_configured_with_env(monkeypatch):
+    monkeypatch.setenv("ECHO_REPRO_CMD_TIMEOUT", "1")
+    result = repo_manager.run_cmd(
+        [sys.executable, "-c", "import time; time.sleep(2)"],
+        timeout=120,
+    )
+
+    assert result.returncode == 124

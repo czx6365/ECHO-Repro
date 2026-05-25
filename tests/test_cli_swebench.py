@@ -51,7 +51,8 @@ def test_run_swebench_one_creates_result_json(tmp_path: Path, monkeypatch):
     _make_mock_repo(buggy_repo, fixed=False)
     _make_mock_repo(fixed_repo, fixed=True)
 
-    def fake_prepare(instance: dict, workdir: Path) -> PreparedRepos:
+    def fake_prepare(instance: dict, workdir: Path, cache_dir: Path | None = None) -> PreparedRepos:
+        assert cache_dir == Path("repos/cache")
         return PreparedRepos(
             instance_id=instance["instance_id"],
             repo=instance["repo"],
@@ -59,6 +60,7 @@ def test_run_swebench_one_creates_result_json(tmp_path: Path, monkeypatch):
             buggy_repo=buggy_repo,
             fixed_repo=fixed_repo,
             patch_applied=True,
+            repo_cache_path=cache_dir,
         )
 
     monkeypatch.setattr(cli_module, "prepare_swebench_repos", fake_prepare)
@@ -118,7 +120,7 @@ def test_run_swebench_one_accepts_llm_mock(tmp_path: Path, monkeypatch):
     _make_mock_repo(buggy_repo, fixed=False)
     _make_mock_repo(fixed_repo, fixed=True)
 
-    def fake_prepare(instance: dict, workdir: Path) -> PreparedRepos:
+    def fake_prepare(instance: dict, workdir: Path, cache_dir: Path | None = None) -> PreparedRepos:
         return PreparedRepos(
             instance_id=instance["instance_id"],
             repo=instance["repo"],
@@ -165,7 +167,7 @@ def test_run_swebench_one_openai_without_api_key_gives_clear_error(tmp_path: Pat
     _make_mock_repo(buggy_repo, fixed=False)
     _make_mock_repo(fixed_repo, fixed=True)
 
-    def fake_prepare(instance: dict, workdir: Path) -> PreparedRepos:
+    def fake_prepare(instance: dict, workdir: Path, cache_dir: Path | None = None) -> PreparedRepos:
         return PreparedRepos(
             instance_id=instance["instance_id"],
             repo=instance["repo"],

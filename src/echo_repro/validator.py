@@ -6,19 +6,25 @@ from echo_repro.models import ExecutionResult, ValidationResult
 def classify_execution(result: ExecutionResult) -> str:
     stdout = result.stdout.strip()
     stderr = result.stderr.strip().lower()
-    if result.timed_out:
-        return "timeout"
     if stdout == "Issue reproduced":
         return "reproduced"
     if stdout == "Issue resolved":
         return "resolved"
-    if "syntaxerror" in stderr:
-        return "syntax_error"
-    if "importerror" in stderr or "modulenotfounderror" in stderr:
-        return "import_error"
+    if result.timed_out:
+        return "timeout"
+    if "modulenotfounderror" in stderr or "no module named" in stderr:
+        return "dependency_error"
+    if "importerror" in stderr or "broken installation" in stderr or "cannot import name" in stderr:
+        return "environment_error"
+    if "syntaxerror" in stderr or "indentationerror" in stderr:
+        return "harness_error"
     if "filenotfounderror" in stderr or "no such file" in stderr:
-        return "file_error"
-    return "other"
+        return "harness_error"
+    if stdout == "Other issues":
+        return "oracle_error"
+    if result.returncode not in (0, None):
+        return "harness_error"
+    return "oracle_error"
 
 
 def validate_fail_to_pass(
@@ -49,4 +55,3 @@ def validate_fail_to_pass(
         fixed_status=fixed_status,
         summary=summary,
     )
-
