@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import re
+
 from echo_repro.models import ExecutionResult, ValidationResult
 
 
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _final_stdout_line(stdout: str) -> str:
+    lines = [ANSI_RE.sub("", line).strip() for line in stdout.splitlines() if ANSI_RE.sub("", line).strip()]
+    return lines[-1] if lines else ""
+
+
 def classify_execution(result: ExecutionResult) -> str:
-    stdout = result.stdout.strip()
+    stdout = _final_stdout_line(result.stdout)
     stderr = result.stderr.strip().lower()
     if stdout == "Issue reproduced":
         return "reproduced"
@@ -19,6 +29,8 @@ def classify_execution(result: ExecutionResult) -> str:
     if "syntaxerror" in stderr or "indentationerror" in stderr:
         return "harness_error"
     if "filenotfounderror" in stderr or "no such file" in stderr:
+        return "harness_error"
+    if stdout == "Other issues" and "traceback (most recent call last)" in stderr:
         return "harness_error"
     if stdout == "Other issues":
         return "oracle_error"

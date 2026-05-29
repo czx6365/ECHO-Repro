@@ -4,7 +4,17 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
-
+"""BugSpec                 # 结构化 bug 描述（标题、当前行为、期望行为、失败签名、关键词、可疑符号等）
+RetrievedContext           # 检索到的源码/测试/环境文件及代码片段
+HarnessCandidate           # LLM 生成的复现脚本候选
+ExecutionResult            # 脚本执行结果（stdout/stderr/returncode/timeout）
+ValidationResult           # F2P 验证结果（成功/失败/分类）
+FeedbackLoopAttempt        # 每轮反馈循环的完整记录
+PipelineResult             # 最终流水线结果（含所有中间产出）
+PreparedRepos              # 准备好的 buggy/fixed 仓库元信息
+EnvironmentProfileResult   # 环境分析结果（Python 版本、依赖哈希等）
+EnvironmentRepairResult    # 环境修复记录
+"""
 
 class BugSpec(BaseModel):
     title: str

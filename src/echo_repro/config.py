@@ -42,6 +42,9 @@ class LLMSettings(BaseModel):
     timeout_seconds: int = Field(
         default_factory=lambda: int(os.getenv("ECHO_REPRO_LLM_TIMEOUT", "60"))
     )
+    max_tokens: int = Field(
+        default_factory=lambda: int(os.getenv("ECHO_REPRO_LLM_MAX_TOKENS", "8192"))
+    )
 
 
 def get_llm_settings() -> LLMSettings:

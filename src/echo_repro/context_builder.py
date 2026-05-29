@@ -39,11 +39,13 @@ Original Issue Text
 
 Task Instruction
 Generate a complete Python reproduction harness named reproduce.py.
-It must print exactly one of:
+It must print exactly one final stdout line from:
 - Issue reproduced
 - Issue resolved
 - Other issues
 Use real imports and real function calls when possible.
 Do not fake failure with a direct assertion created only to force reproduction.
+Use the smallest issue-specific observation that distinguishes buggy behavior
+from fixed behavior. If an unexpected import/runtime exception happens, print
+its traceback to stderr and then print Other issues.
 """
-

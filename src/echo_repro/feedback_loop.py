@@ -50,7 +50,12 @@ def _run_once(repo_path: Path, harness_candidate: HarnessCandidate, python_execu
     )
 
 
-def _feedback_for_result(status: str, result: ExecutionResult, fixed_status: str | None = None) -> str:
+def _feedback_for_result(
+    status: str,
+    result: ExecutionResult,
+    fixed_status: str | None = None,
+    fixed_result: ExecutionResult | None = None,
+) -> str:
     parts = [
         f"Execution status: {status}",
         f"stdout:\n{result.stdout.strip()}",
@@ -58,6 +63,13 @@ def _feedback_for_result(status: str, result: ExecutionResult, fixed_status: str
     ]
     if fixed_status:
         parts.append(f"Fixed repo status: {fixed_status}")
+    if fixed_result:
+        parts.extend(
+            [
+                f"Fixed repo stdout:\n{fixed_result.stdout.strip()}",
+                f"Fixed repo stderr:\n{fixed_result.stderr.strip()}",
+            ]
+        )
     return "\n\n".join(parts)
 
 
@@ -164,6 +176,20 @@ def run_feedback_loop(
             current_llm_metadata = llm_client.last_call_metadata or LLMCallMetadata()
             continue
 
+        if buggy_status == "resolved":
+            harness_candidate = repair_harness(
+                concise_context,
+                harness_candidate,
+                llm_client,
+                feedback=_feedback_for_result(buggy_status, buggy_execution),
+                strengthen_oracle=False,
+            )
+            next_action = "repair_harness"
+            next_note = "Repaired harness because buggy repo looked resolved."
+            current_prompt_text = llm_client.last_prompt
+            current_llm_metadata = llm_client.last_call_metadata or LLMCallMetadata()
+            continue
+
         if buggy_status != "reproduced":
             harness_candidate = repair_harness(
                 concise_context,
@@ -186,6 +212,7 @@ def run_feedback_loop(
                 buggy_status,
                 buggy_execution,
                 fixed_status=fixed_status,
+                fixed_result=fixed_execution,
             ),
             strengthen_oracle=True,
         )

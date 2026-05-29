@@ -7,6 +7,7 @@ from echo_repro.harness_generator import generate_harness
 from echo_repro.llm.mock_client import MockLLMClient
 from echo_repro.models import EnvironmentRepairResult, ExecutionResult
 import echo_repro.feedback_loop as feedback_loop_module
+from echo_repro.feedback_loop import _feedback_for_result
 from echo_repro.retriever import retrieve_context
 from echo_repro.validator import classify_execution
 
@@ -31,6 +32,11 @@ class AlwaysOtherMockLLM(MockLLMClient):
 
     def strengthen_oracle(self, concise_context: str, current_code: str, feedback: str) -> str:
         return current_code
+
+
+class ResolvedThenRepairMockLLM(MockLLMClient):
+    def generate_harness(self, concise_context: str) -> str:
+        return 'print("Issue resolved")\n'
 
 
 def test_syntax_error_repair_path_succeeds():
@@ -210,3 +216,47 @@ def test_successful_fail_to_pass_after_repair():
     assert result.validation.fixed_status == "resolved"
     assert result.attempts[0].buggy_status == "harness_error"
     assert result.attempts[-1].fixed_status == "resolved"
+
+
+def test_feedback_loop_repairs_when_buggy_repo_looks_resolved():
+    _, llm_client, bug_spec, retrieved_context, concise_context = _build_context()
+    resolved_client = ResolvedThenRepairMockLLM()
+    initial_harness = generate_harness(concise_context, resolved_client)
+
+    result = run_feedback_loop(
+        bug_spec=bug_spec,
+        retrieved_context=retrieved_context,
+        concise_context=concise_context,
+        initial_harness=initial_harness,
+        llm_client=llm_client,
+        buggy_repo=Path("examples/mock_buggy_repo"),
+        fixed_repo=Path("examples/mock_fixed_repo"),
+        max_attempts=2,
+    )
+
+    assert result.attempts[0].buggy_status == "resolved"
+    assert result.attempts[1].action == "repair_harness"
+    assert result.validation.success is True
+
+
+def test_feedback_for_result_includes_fixed_execution_output():
+    buggy = ExecutionResult(
+        repo_path=Path("examples/mock_buggy_repo"),
+        command="python reproduce.py",
+        returncode=0,
+        stdout="Issue reproduced\n",
+        stderr="",
+    )
+    fixed = ExecutionResult(
+        repo_path=Path("examples/mock_fixed_repo"),
+        command="python reproduce.py",
+        returncode=0,
+        stdout="Issue reproduced\n",
+        stderr="fixed details",
+    )
+
+    feedback = _feedback_for_result("reproduced", buggy, fixed_status="reproduced", fixed_result=fixed)
+
+    assert "Fixed repo status: reproduced" in feedback
+    assert "Fixed repo stdout:\nIssue reproduced" in feedback
+    assert "Fixed repo stderr:\nfixed details" in feedback

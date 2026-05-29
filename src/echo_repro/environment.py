@@ -179,6 +179,31 @@ def _version_from_python_requires(specifier: str, current_version: str) -> str:
     return current_version
 
 
+def _uses_stdlib_distutils(repo_path: Path) -> bool:
+    return _repo_python_text_matches(repo_path, r"(?m)^\s*(from\s+distutils\b|import\s+distutils\b)")
+
+
+def _uses_removed_collections_abc_imports(repo_path: Path) -> bool:
+    return _repo_python_text_matches(
+        repo_path,
+        r"(?m)^\s*from\s+collections\s+import\s+.*\b(Mapping|MutableMapping|Sequence|Iterable|Callable)\b",
+    )
+
+
+def _repo_python_text_matches(repo_path: Path, pattern: str) -> bool:
+    compiled = re.compile(pattern)
+    for path in Path(repo_path).rglob("*.py"):
+        if any(part in {".git", ".tox", ".venv", "build", "dist", "__pycache__"} for part in path.parts):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if compiled.search(text):
+            return True
+    return False
+
+
 def detect_python_version(repo_path: Path, current_version: str | None = None) -> str:
     repo_path = Path(repo_path)
     current_version = current_version or f"{sys.version_info.major}.{sys.version_info.minor}"
@@ -199,19 +224,24 @@ def detect_python_version(repo_path: Path, current_version: str | None = None) -
         if (repo_path / "setup.cfg").is_file()
         else ""
     )
-    return _version_from_python_requires(pyproject_requires or setup_requires, current_version)
+    detected = _version_from_python_requires(pyproject_requires or setup_requires, current_version)
+    if _version_tuple(detected) > (3, 9) and _uses_removed_collections_abc_imports(repo_path):
+        return "3.9"
+    if _version_tuple(detected) > (3, 11) and _uses_stdlib_distutils(repo_path):
+        return "3.11"
+    return detected
 
 
 def find_python_executable(version: str, base_python: Path) -> Path | None:
     current = f"{sys.version_info.major}.{sys.version_info.minor}"
-    if version == current:
-        return Path(base_python)
-
     base_candidate = Path(base_python)
     if base_candidate.exists():
         completed = run_cmd([str(base_candidate), "--version"], timeout=10)
         if completed.returncode == 0 and version in (completed.stdout + completed.stderr):
             return base_candidate
+
+    if version == current:
+        return Path(sys.executable)
 
     candidate_names = [f"python{version}", f"python{version.replace('.', '')}"]
     for candidate_name in candidate_names:
@@ -262,12 +292,71 @@ def _legacy_build_env() -> dict[str, str]:
     return env
 
 
+def _astropy_build_ext_env() -> dict[str, str]:
+    env = _legacy_build_env()
+    env["ASTROPY_USE_SYSTEM_CFITSIO"] = "1"
+    pkg_config_path = env.get("PKG_CONFIG_PATH", "")
+    homebrew_pkg_config = "/opt/homebrew/lib/pkgconfig"
+    if homebrew_pkg_config not in pkg_config_path.split(os.pathsep):
+        env["PKG_CONFIG_PATH"] = (
+            f"{pkg_config_path}{os.pathsep}{homebrew_pkg_config}"
+            if pkg_config_path
+            else homebrew_pkg_config
+        )
+    return env
+
+
 def _needs_legacy_build_fallback(result: subprocess.CompletedProcess) -> bool:
     output = f"{result.stdout}\n{result.stderr}"
     return (
         "setuptools.dep_util" in output
         or "incompatible-function-pointer-types" in output
     )
+
+
+def _needs_non_editable_fallback(result: subprocess.CompletedProcess) -> bool:
+    output = f"{result.stdout}\n{result.stderr}"
+    return "missing the 'build_editable' hook" in output
+
+
+def _needs_astropy_build_ext_fallback(result: subprocess.CompletedProcess) -> bool:
+    output = f"{result.stdout}\n{result.stderr}"
+    return (
+        "Failed building wheel for astropy" in output
+        or "Failed to build installable wheels" in output and "astropy" in output
+    )
+
+
+def _legacy_runtime_constraints(repo_slug: str, repo_path: Path) -> list[str]:
+    constraints = []
+    if repo_slug == "pydata__xarray" and _repo_python_text_matches(repo_path, r"\bnp\.unicode_\b"):
+        constraints.extend(["numpy<2", "pandas<2"])
+    return constraints
+
+
+def _astropy_import_check(python_path: Path, repo_path: Path) -> subprocess.CompletedProcess:
+    return run_cmd(
+        [str(python_path), "-c", "import astropy"],
+        cwd=repo_path,
+        timeout=60,
+    )
+
+
+def _astropy_import_needs_build_ext(result: subprocess.CompletedProcess) -> bool:
+    output = f"{result.stdout}\n{result.stderr}"
+    return (
+        "build_ext --inplace" in output
+        or "extension modules are built" in output
+        or "cannot import name '_compiler'" in output
+    )
+
+
+def _stale_astropy_profile(python_path: Path, build_repo_paths: list[Path]) -> subprocess.CompletedProcess | None:
+    for build_repo_path in build_repo_paths:
+        checked = _astropy_import_check(python_path, build_repo_path)
+        if checked.returncode != 0 and _astropy_import_needs_build_ext(checked):
+            return checked
+    return None
 
 
 def _write_profile_marker(
@@ -333,6 +422,55 @@ class EnvironmentProfileManager:
         )
 
         if python_path.exists() and profile_marker.exists():
+            runtime_constraints = _legacy_runtime_constraints(repo_slug, repo_path)
+            if runtime_constraints and self.allow_install:
+                install_cmd = [str(python_path), "-m", "pip", "install", *runtime_constraints]
+                constrained = run_cmd(install_cmd, timeout=self.install_timeout)
+                if constrained.returncode != 0:
+                    base_result.attempted = True
+                    base_result.install_command = install_cmd
+                    base_result.returncode = constrained.returncode
+                    base_result.stdout = constrained.stdout
+                    base_result.stderr = constrained.stderr
+                    base_result.reason = "Failed to install legacy runtime constraints."
+                    return base_result
+
+            stale_astropy = (
+                _stale_astropy_profile(python_path, build_repo_paths)
+                if repo_slug == "astropy__astropy"
+                else None
+            )
+            if stale_astropy:
+                base_result.stdout = stale_astropy.stdout
+                base_result.stderr = stale_astropy.stderr
+                if not self.allow_install:
+                    base_result.reason = "Cached Astropy env exists, but extension modules are not built."
+                    return base_result
+                profile_marker.unlink(missing_ok=True)
+            else:
+                base_result.ready = True
+                base_result.reused_existing = True
+                base_result.reason = "Reusing cached environment profile."
+                return base_result
+
+        if repo_slug == "astropy__astropy" and python_path.exists() and not profile_marker.exists():
+            stale_astropy = _stale_astropy_profile(python_path, build_repo_paths)
+            if stale_astropy is None:
+                _write_profile_marker(
+                    profile_marker,
+                    repo=self.repo,
+                    profile_key=profile_key,
+                    dependency_hash=dependency_hash,
+                    build_repo_paths=build_repo_paths,
+                )
+                base_result.ready = True
+                base_result.reused_existing = True
+                base_result.reason = "Reusing validated Astropy environment profile."
+                return base_result
+            base_result.stdout = stale_astropy.stdout
+            base_result.stderr = stale_astropy.stderr
+
+        if python_path.exists() and profile_marker.exists():
             base_result.ready = True
             base_result.reused_existing = True
             base_result.reason = "Reusing cached environment profile."
@@ -371,9 +509,24 @@ class EnvironmentProfileManager:
 
         installed = None
         for build_repo_path in build_repo_paths:
+            editable_supported = True
             install_cmd = [str(python_path), "-m", "pip", "install", "-e", "."]
             installed = run_cmd(install_cmd, cwd=build_repo_path, timeout=self.install_timeout)
+            if installed.returncode != 0 and _needs_non_editable_fallback(installed):
+                editable_supported = False
+                install_cmd = [str(python_path), "-m", "pip", "install", "."]
+                installed = run_cmd(install_cmd, cwd=build_repo_path, timeout=self.install_timeout)
             if installed.returncode == 0:
+                if repo_slug == "astropy__astropy":
+                    install_cmd = [str(python_path), "setup.py", "build_ext", "--inplace"]
+                    installed = run_cmd(
+                        install_cmd,
+                        cwd=build_repo_path,
+                        timeout=self.install_timeout,
+                        env=_astropy_build_ext_env(),
+                    )
+                    if installed.returncode != 0:
+                        break
                 continue
             if not _needs_legacy_build_fallback(installed):
                 break
@@ -385,19 +538,66 @@ class EnvironmentProfileManager:
                 install_cmd = deps_cmd
                 break
 
-            install_cmd = [str(python_path), "-m", "pip", "install", "-e", ".", "--no-build-isolation"]
+            install_cmd = [str(python_path), "-m", "pip", "install"]
+            if editable_supported:
+                install_cmd.append("-e")
+            install_cmd.extend([".", "--no-build-isolation"])
             installed = run_cmd(
                 install_cmd,
                 cwd=build_repo_path,
                 timeout=self.install_timeout,
                 env=_legacy_build_env(),
             )
+            if installed.returncode != 0 and _needs_non_editable_fallback(installed):
+                install_cmd = [
+                    str(python_path),
+                    "-m",
+                    "pip",
+                    "install",
+                    ".",
+                    "--no-build-isolation",
+                ]
+                installed = run_cmd(
+                    install_cmd,
+                    cwd=build_repo_path,
+                    timeout=self.install_timeout,
+                    env=_legacy_build_env(),
+                )
             if installed.returncode != 0:
+                if repo_slug == "astropy__astropy" and _needs_astropy_build_ext_fallback(installed):
+                    runtime_deps_cmd = [str(python_path), "-m", "pip", "install", "pyerfa"]
+                    runtime_deps = run_cmd(runtime_deps_cmd, timeout=self.install_timeout)
+                    if runtime_deps.returncode != 0:
+                        installed = runtime_deps
+                        install_cmd = runtime_deps_cmd
+                        break
+                    install_cmd = [str(python_path), "setup.py", "build_ext", "--inplace"]
+                    installed = run_cmd(
+                        install_cmd,
+                        cwd=build_repo_path,
+                        timeout=self.install_timeout,
+                        env=_astropy_build_ext_env(),
+                    )
+                    if installed.returncode == 0:
+                        continue
+                    installed.stdout = f"{runtime_deps.stdout}\n{installed.stdout}"
+                    installed.stderr = f"{runtime_deps.stderr}\n{installed.stderr}"
                 installed.stdout = f"{deps_installed.stdout}\n{installed.stdout}"
                 installed.stderr = f"{deps_installed.stderr}\n{installed.stderr}"
                 break
 
         assert installed is not None
+        runtime_constraints = _legacy_runtime_constraints(repo_slug, repo_path)
+        if installed.returncode == 0 and runtime_constraints:
+            install_cmd = [str(python_path), "-m", "pip", "install", *runtime_constraints]
+            installed = run_cmd(install_cmd, timeout=self.install_timeout)
+
+        if installed.returncode == 0 and repo_slug == "astropy__astropy":
+            stale_astropy = _stale_astropy_profile(python_path, build_repo_paths)
+            if stale_astropy:
+                install_cmd = [str(python_path), "-c", "import astropy"]
+                installed = stale_astropy
+
         base_result.attempted = True
         base_result.ready = installed.returncode == 0
         base_result.install_command = install_cmd
@@ -430,8 +630,8 @@ class EnvironmentRepairManager:
     @property
     def env_path(self) -> Path:
         if self.env_path_override:
-            return Path(self.env_path_override)
-        return Path(self.env_root) / slugify_repo(self.repo_slug)
+            return Path(self.env_path_override).resolve()
+        return (Path(self.env_root) / slugify_repo(self.repo_slug)).resolve()
 
     @property
     def python_path(self) -> Path:

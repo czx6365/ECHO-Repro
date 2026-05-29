@@ -8,6 +8,7 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from echo_repro import __version__
 from echo_repro.bug_spec import extract_bug_spec
@@ -31,6 +32,10 @@ from echo_repro.validator import classify_execution
 
 app = typer.Typer(help="ECHO-Repro research prototype CLI.")
 console = Console()
+
+
+def _plain_text(value: str) -> Text:
+    return Text(value, overflow="fold")
 
 
 def _load_issue_text(issue_file: Path) -> str:
@@ -101,7 +106,7 @@ def _print_pipeline_result(result, buggy_repo: Path) -> None:
 def _print_swebench_run_result(instance: dict, prepared, result, output_path: Path) -> None:
     console.print(
         Panel(
-            json.dumps(
+            _plain_text(json.dumps(
                 {
                     "instance_id": prepared.instance_id,
                     "repo": prepared.repo,
@@ -117,7 +122,7 @@ def _print_swebench_run_result(instance: dict, prepared, result, output_path: Pa
                     "output_json": str(output_path),
                 },
                 indent=2,
-            ),
+            )),
             title="SWE-bench Run",
         )
     )
@@ -130,24 +135,24 @@ def _print_swebench_run_result(instance: dict, prepared, result, output_path: Pa
     table.add_row("Env", "\n".join(str(path) for path in result.retrieved_context.env_files) or "(none)")
     console.print(table)
 
-    console.print(Panel(str(prepared.buggy_repo / result.harness_candidate.filename), title="Generated Harness Path"))
+    console.print(Panel(_plain_text(str(prepared.buggy_repo / result.harness_candidate.filename)), title="Generated Harness Path"))
     if result.environment_profile:
         console.print(
             Panel(
-                result.environment_profile.model_dump_json(indent=2),
+                _plain_text(result.environment_profile.model_dump_json(indent=2)),
                 title="Environment Profile",
             )
         )
     console.print(
         Panel(
-            json.dumps(
+            _plain_text(json.dumps(
                 {
                     "buggy_execution_status": classify_execution(result.buggy_execution),
                     "fixed_execution_status": classify_execution(result.fixed_execution) if result.fixed_execution else None,
                     "validation": result.validation.model_dump(mode="json"),
                 },
                 indent=2,
-            ),
+            )),
             title="Execution Summary",
         )
     )
@@ -348,6 +353,7 @@ def run_swebench_one(
                 environment_repair_manager=EnvironmentRepairManager(
                     repo_slug=prepared.repo,
                     env_root=env_root,
+                    base_python=env_python or Path(sys.executable),
                 ),
                 environment_profile_manager=environment_profile_manager,
             )

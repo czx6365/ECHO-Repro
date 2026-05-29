@@ -1,4 +1,6 @@
 from pathlib import Path
+import shlex
+import sys
 
 from echo_repro.executor import run_harness, write_harness
 from echo_repro.models import HarnessCandidate
@@ -35,3 +37,43 @@ else:
     assert validation.buggy_status == "reproduced"
     assert validation.fixed_status == "resolved"
 
+
+def test_validator_prefers_stderr_environment_signal_over_other_issues_marker():
+    result = run_harness(
+        Path("examples/mock_buggy_repo"),
+        command=(
+            f"{shlex.quote(sys.executable)} -c \"import sys; "
+            "print('Other issues'); "
+            "print('ImportError: cannot import name _compiler', file=sys.stderr)\""
+        ),
+    )
+
+    assert classify_execution(result) == "environment_error"
+
+
+def test_validator_uses_final_stdout_marker_line():
+    result = run_harness(
+        Path("examples/mock_buggy_repo"),
+        command=(
+            f"{shlex.quote(sys.executable)} -c \""
+            "print('tool log'); "
+            "print('\\x1b[01mbuild succeeded\\x1b[39;49;00m'); "
+            "print('Issue reproduced')\""
+        ),
+    )
+
+    assert classify_execution(result) == "reproduced"
+
+
+def test_validator_treats_other_issues_traceback_as_harness_error():
+    result = run_harness(
+        Path("examples/mock_buggy_repo"),
+        command=(
+            f"{shlex.quote(sys.executable)} -c \"import sys; "
+            "print('Other issues'); "
+            "print('Traceback (most recent call last):', file=sys.stderr); "
+            "print('ValueError: bad harness assumption', file=sys.stderr)\""
+        ),
+    )
+
+    assert classify_execution(result) == "harness_error"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shlex
 import sys
 
 from echo_repro.bug_spec import extract_bug_spec
@@ -15,7 +16,7 @@ from echo_repro.llm.mock_client import MockLLMClient
 from echo_repro.llm.openai_client import OpenAICompatibleLLMClient
 from echo_repro.models import LLMCallMetadata, PipelineResult
 from echo_repro.retriever import retrieve_context
-from echo_repro.validator import validate_fail_to_pass
+from echo_repro.validator import classify_execution, validate_fail_to_pass
 from echo_repro.config import get_llm_settings
 
 
@@ -40,6 +41,42 @@ def _client_temperature(llm_client: BaseLLMClient) -> float | None:
     return getattr(llm_client, "temperature", getattr(settings, "temperature", None))
 
 
+def _candidate_rank(status: str) -> int:
+    return {
+        "reproduced": 0,
+        "harness_error": 1,
+        "oracle_error": 2,
+        "resolved": 3,
+    }.get(status, 4)
+
+
+def _select_initial_harness(
+    concise_context: str,
+    llm_client: BaseLLMClient,
+    buggy_repo: Path,
+    python_executable: Path,
+    candidate_count: int = 3,
+):
+    best = None
+    for _ in range(max(1, candidate_count)):
+        candidate = generate_harness(concise_context, llm_client)
+        prompt = llm_client.last_prompt
+        metadata = llm_client.last_call_metadata or LLMCallMetadata()
+        write_harness(buggy_repo, candidate, filename=candidate.filename)
+        execution = run_harness(
+            buggy_repo,
+            command=f"{shlex.quote(str(python_executable))} {shlex.quote(candidate.filename)}",
+        )
+        status = classify_execution(execution)
+        item = (candidate, prompt, metadata, status)
+        if best is None or _candidate_rank(status) < _candidate_rank(best[3]):
+            best = item
+        if status == "reproduced":
+            break
+    assert best is not None
+    return best[:3]
+
+
 def run_pipeline(
     issue_text: str,
     buggy_repo: Path,
@@ -53,9 +90,12 @@ def run_pipeline(
     bug_spec_llm_metadata = llm_client.last_call_metadata or LLMCallMetadata()
     retrieved_context = retrieve_context(buggy_repo, bug_spec)
     concise_context = build_concise_context(issue_text, bug_spec, retrieved_context)
-    harness_candidate = generate_harness(concise_context, llm_client)
-    initial_harness_prompt = llm_client.last_prompt
-    initial_harness_llm_metadata = llm_client.last_call_metadata or LLMCallMetadata()
+    harness_candidate, initial_harness_prompt, initial_harness_llm_metadata = _select_initial_harness(
+        concise_context,
+        llm_client,
+        Path(buggy_repo),
+        Path(sys.executable),
+    )
 
     write_harness(buggy_repo, harness_candidate, filename=harness_candidate.filename)
     buggy_execution = run_harness(
@@ -115,9 +155,12 @@ def run_pipeline_with_feedback_loop(
     bug_spec_llm_metadata = llm_client.last_call_metadata or LLMCallMetadata()
     retrieved_context = retrieve_context(buggy_repo, bug_spec)
     concise_context = build_concise_context(issue_text, bug_spec, retrieved_context)
-    harness_candidate = generate_harness(concise_context, llm_client)
-    initial_harness_prompt = llm_client.last_prompt
-    initial_harness_llm_metadata = llm_client.last_call_metadata or LLMCallMetadata()
+    harness_candidate, initial_harness_prompt, initial_harness_llm_metadata = _select_initial_harness(
+        concise_context,
+        llm_client,
+        Path(buggy_repo),
+        Path(initial_python_executable or sys.executable),
+    )
     return run_feedback_loop(
         bug_spec=bug_spec,
         retrieved_context=retrieved_context,

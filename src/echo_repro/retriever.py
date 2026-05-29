@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from echo_repro.models import BugSpec, RetrievedContext
 from echo_repro.utils.file_utils import read_text_safe
@@ -19,6 +20,85 @@ ENV_FILE_NAMES = {
 
 TEST_FILE_NAMES = {"tests.py", "conftest.py"}
 
+IGNORED_DIR_NAMES = {
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "env",
+    "venv",
+}
+
+IGNORED_DIR_SUFFIXES = (
+    ".egg",
+    ".egg-info",
+    ".dist-info",
+)
+
+STOPWORDS = {
+    "able",
+    "about",
+    "after",
+    "also",
+    "and",
+    "are",
+    "available",
+    "behavior",
+    "but",
+    "can",
+    "cannot",
+    "current",
+    "does",
+    "expected",
+    "for",
+    "from",
+    "has",
+    "have",
+    "into",
+    "issue",
+    "only",
+    "return",
+    "returns",
+    "should",
+    "that",
+    "the",
+    "this",
+    "when",
+    "with",
+    "without",
+}
+
+
+def _query_tokens(query: str) -> set[str]:
+    tokens = set()
+    for token in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*|\d+", query.lower()):
+        if token in STOPWORDS:
+            continue
+        if len(token) < 3 and not token.startswith("_"):
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def _is_ignored_path(path: Path, repo_path: Path) -> bool:
+    try:
+        parts = path.relative_to(repo_path).parts
+    except ValueError:
+        parts = path.parts
+    for part in parts[:-1]:
+        lowered = part.lower()
+        if lowered in IGNORED_DIR_NAMES or lowered.endswith(IGNORED_DIR_SUFFIXES):
+            return True
+    return False
+
 
 def collect_files(repo_path: Path) -> list[Path]:
     repo_path = Path(repo_path)
@@ -28,24 +108,30 @@ def collect_files(repo_path: Path) -> list[Path]:
             continue
         if path.name == "reproduce.py":
             continue
-        if any(part.startswith(".pytest_cache") or part == "__pycache__" for part in path.parts):
+        if _is_ignored_path(path, repo_path):
             continue
         files.append(path)
     return sorted(files)
 
 
 def _score_file(path: Path, query: str, preferred_kind: str) -> int:
-    query_tokens = {token for token in query.lower().split() if token}
+    query_tokens = _query_tokens(query)
     path_text = str(path).lower()
-    content = read_text_safe(path, max_chars=3_000).lower()
-    haystack = f"{path_text}\n{content}"
-    score = sum(3 for token in query_tokens if token in haystack)
+    content = read_text_safe(path, max_chars=12_000).lower()
+    score = 0
+    for token in query_tokens:
+        if token in path_text:
+            score += 3
+        if token in content:
+            score += 5
 
     if preferred_kind == "source":
         if path.suffix == ".py":
             score += 5
         if "test" in path.name.lower():
             score -= 3
+        if any(part.lower() in {"doc", "docs", "example", "examples"} for part in path.parts):
+            score -= 6
     elif preferred_kind == "test":
         if path.name.startswith("test_") or path.name.endswith("_test.py"):
             score += 8
@@ -58,12 +144,12 @@ def _score_file(path: Path, query: str, preferred_kind: str) -> int:
 
 
 def _top_files(files: list[Path], query: str, preferred_kind: str, top_k: int) -> list[Path]:
-    ranked = sorted(
-        files,
-        key=lambda path: (_score_file(path, query, preferred_kind), path.suffix == ".py"),
-        reverse=True,
-    )
-    return [path for path in ranked if _score_file(path, query, preferred_kind) > 0][:top_k]
+    scored = [
+        (_score_file(path, query, preferred_kind), path)
+        for path in files
+    ]
+    ranked = sorted(scored, key=lambda item: (item[0], item[1].suffix == ".py"), reverse=True)
+    return [path for score, path in ranked if score > 0][:top_k]
 
 
 def retrieve_source_files(repo_path: Path, query: str, top_k: int = 5) -> list[Path]:
@@ -97,8 +183,40 @@ def retrieve_env_files(repo_path: Path) -> list[Path]:
     return files[:10]
 
 
-def _build_snippets(paths: list[Path], max_chars: int = 700) -> dict[str, str]:
-    return {str(path): read_text_safe(path, max_chars=max_chars) for path in paths}
+def _read_relevant_snippet(path: Path, query: str, max_chars: int = 700) -> str:
+    text = read_text_safe(path, max_chars=50_000)
+    if len(text) <= max_chars:
+        return text
+
+    lowered = text.lower()
+    tokens = _query_tokens(query)
+    positions = [lowered.find(token) for token in tokens if token in lowered]
+    positions = [position for position in positions if position >= 0]
+    if not positions:
+        return text[:max_chars]
+
+    best_start = 0
+    best_score = -1
+    for position in positions:
+        start = max(0, position - max_chars // 3)
+        end = min(len(text), start + max_chars)
+        start = max(0, end - max_chars)
+        window = lowered[start:end]
+        score = sum(1 for token in tokens if token in window)
+        if score > best_score or (score == best_score and start < best_start):
+            best_score = score
+            best_start = start
+
+    snippet = text[best_start:best_start + max_chars]
+    if best_start > 0:
+        snippet = "...\n" + snippet
+    if best_start + max_chars < len(text):
+        snippet = snippet + "\n..."
+    return snippet
+
+
+def _build_snippets(paths: list[Path], query: str = "", max_chars: int = 700) -> dict[str, str]:
+    return {str(path): _read_relevant_snippet(path, query=query, max_chars=max_chars) for path in paths}
 
 
 def retrieve_context(repo_path: Path, bug_spec: BugSpec) -> RetrievedContext:
@@ -120,7 +238,7 @@ def retrieve_context(repo_path: Path, bug_spec: BugSpec) -> RetrievedContext:
         source_files=source_files,
         test_files=test_files,
         env_files=env_files,
-        source_snippets=_build_snippets(source_files),
-        test_snippets=_build_snippets(test_files),
+        source_snippets=_build_snippets(source_files, query=query),
+        test_snippets=_build_snippets(test_files, query=query),
         env_snippets=_build_snippets(env_files, max_chars=400),
     )
