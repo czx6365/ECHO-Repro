@@ -1,0 +1,29 @@
+dataset:
+  hf_name: ci-benchmark-user/ci-repair-bench
+  local_path: data/ci_repair_subset_50.jsonl
+  limit: 50
+  seed: 42
+
+execution:
+  timeout_seconds: 120
+  work_dir: work/ci_repair
+  max_log_chars: 20000
+  max_snippet_chars: 1500
+
+retrieval:
+  source_top_k: 5
+  test_top_k: 5
+  env_top_k: 10
+  workflow_top_k: 3
+
+llm:
+  provider: openai_compatible
+  model: ${MODEL_NAME}
+  api_key_env: OPENAI_API_KEY
+  base_url_env: OPENAI_BASE_URL
+  temperature: 0.2
+  max_tokens: 4000
+
+refinement:
+  max_attempts: 4
+
