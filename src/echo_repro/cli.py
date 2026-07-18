@@ -42,10 +42,10 @@ def _load_issue_text(issue_file: Path) -> str:
     return Path(issue_file).read_text(encoding="utf-8")
 
 
-def _resolve_llm_provider(llm: str, mock: bool | None) -> str:
+def _resolve_llm_provider(llm: str, mock: bool, no_mock: bool = False) -> str:
     if mock is True:
         return "mock"
-    if mock is False:
+    if no_mock is True and llm == "mock":
         return "openai"
     return llm
 
@@ -179,10 +179,11 @@ def run_one(
     buggy_repo: Path = typer.Option(..., exists=True, file_okay=False, help="Buggy repository path."),
     fixed_repo: Path | None = typer.Option(None, exists=True, file_okay=False, help="Fixed repository path."),
     llm: str = typer.Option("mock", "--llm", help="LLM provider: mock, openai, or anthropic."),
-    mock: bool | None = typer.Option(None, "--mock/--no-mock", help="Backward-compatible alias for --llm."),
+    mock: bool = typer.Option(False, "--mock", help="Backward-compatible alias for --llm mock."),
+    no_mock: bool = typer.Option(False, "--no-mock", hidden=True, help="Backward-compatible alias for --llm openai."),
 ) -> None:
     issue_text = _load_issue_text(issue_file)
-    provider = _resolve_llm_provider(llm, mock)
+    provider = _resolve_llm_provider(llm, mock, no_mock)
     try:
         result = run_pipeline(
             issue_text,
@@ -203,10 +204,11 @@ def run_loop(
     fixed_repo: Path | None = typer.Option(None, exists=True, file_okay=False, help="Fixed repository path."),
     max_attempts: int = typer.Option(3, min=1, help="Maximum feedback loop attempts."),
     llm: str = typer.Option("mock", "--llm", help="LLM provider: mock, openai, or anthropic."),
-    mock: bool | None = typer.Option(None, "--mock/--no-mock", help="Backward-compatible alias for --llm."),
+    mock: bool = typer.Option(False, "--mock", help="Backward-compatible alias for --llm mock."),
+    no_mock: bool = typer.Option(False, "--no-mock", hidden=True, help="Backward-compatible alias for --llm openai."),
 ) -> None:
     issue_text = _load_issue_text(issue_file)
-    provider = _resolve_llm_provider(llm, mock)
+    provider = _resolve_llm_provider(llm, mock, no_mock)
     try:
         result = run_pipeline_with_feedback_loop(
             issue_text,
@@ -226,10 +228,11 @@ def inspect_context(
     issue_file: Path = typer.Option(..., exists=True, help="Path to issue text file."),
     repo: Path = typer.Option(..., exists=True, file_okay=False, help="Repository path."),
     llm: str = typer.Option("mock", "--llm", help="LLM provider: mock, openai, or anthropic."),
-    mock: bool | None = typer.Option(None, "--mock/--no-mock", help="Backward-compatible alias for --llm."),
+    mock: bool = typer.Option(False, "--mock", help="Backward-compatible alias for --llm mock."),
+    no_mock: bool = typer.Option(False, "--no-mock", hidden=True, help="Backward-compatible alias for --llm openai."),
 ) -> None:
     issue_text = _load_issue_text(issue_file)
-    provider = _resolve_llm_provider(llm, mock)
+    provider = _resolve_llm_provider(llm, mock, no_mock)
     try:
         llm_client = _get_client_for_provider(provider)
     except ValueError as exc:
@@ -304,15 +307,20 @@ def run_swebench_one(
     instance_id: str = typer.Option(..., help="SWE-bench instance identifier."),
     workdir: Path = typer.Option(..., help="Directory for prepared buggy and fixed repos."),
     llm: str = typer.Option("mock", "--llm", help="LLM provider: mock, openai, or anthropic."),
-    mock: bool | None = typer.Option(None, "--mock/--no-mock", help="Backward-compatible alias for --llm."),
+    mock: bool = typer.Option(False, "--mock", help="Backward-compatible alias for --llm mock."),
+    no_mock: bool = typer.Option(False, "--no-mock", hidden=True, help="Backward-compatible alias for --llm openai."),
     max_attempts: int | None = typer.Option(None, min=1, help="Use the feedback loop with this many attempts."),
     env_root: Path = typer.Option(Path("envs"), help="Directory for cached per-repository virtual environments."),
     env_python: Path | None = typer.Option(None, "--env-python", exists=True, dir_okay=False, help="Python interpreter used to create environment profiles."),
-    env_profile: bool = typer.Option(True, "--env-profile/--no-env-profile", help="Detect and reuse repo-level environment profiles."),
-    allow_env_install: bool = typer.Option(False, "--allow-env-install/--no-allow-env-install", help="Allow creating/installing cached repo environments."),
+    env_profile: bool = typer.Option(True, "--env-profile", help="Detect and reuse repo-level environment profiles."),
+    no_env_profile: bool = typer.Option(False, "--no-env-profile", hidden=True, help="Disable repo-level environment profiles."),
+    allow_env_install: bool = typer.Option(False, "--allow-env-install", help="Allow creating/installing cached repo environments."),
+    no_allow_env_install: bool = typer.Option(False, "--no-allow-env-install", hidden=True, help="Disable cached repo environment installation."),
     cache_dir: Path = typer.Option(Path("repos/cache"), help="Directory for cached repository mirrors."),
     output_root: Path = typer.Option(Path("outputs"), help="Directory for experiment result artifacts."),
 ) -> None:
+    env_profile = env_profile and not no_env_profile
+    allow_env_install = allow_env_install and not no_allow_env_install
     instances = load_instances(instances_file)
     instance = select_instance(instances, instance_id)
     try:
@@ -327,7 +335,7 @@ def run_swebench_one(
         )
         _raise_prepare_error(exc)
     issue_text = extract_issue_text(instance)
-    provider = _resolve_llm_provider(llm, mock)
+    provider = _resolve_llm_provider(llm, mock, no_mock)
 
     try:
         if max_attempts is not None:
