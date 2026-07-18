@@ -135,10 +135,10 @@ class RobustRepoManager:
             if repo_cache.exists():
                 shutil.rmtree(repo_cache)
             result = self._record(
-                self._run(["git", "clone", "--no-single-branch", url, str(repo_cache)], cwd=self.cache_dir),
+                self._run(["git", "clone", "--filter=blob:none", "--no-checkout", url, str(repo_cache)], cwd=self.cache_dir),
                 commands,
             )
-            strategy.append("clone_no_single_branch")
+            strategy.append("clone_partial_no_checkout")
             if not result.ok:
                 self.last_prepare_strategy = ",".join(strategy)
                 self.last_prepare_commands = commands
@@ -148,23 +148,21 @@ class RobustRepoManager:
             self._record(self._run(["git", "fetch", "origin", "--tags", "--prune", "--force"], cwd=repo_cache), commands)
             strategy.append("update_cache")
 
-        marker = repo_cache / ".echo_ci_aggressive_fetch_done"
+        marker = repo_cache / ".echo_ci_base_fetch_done"
         if marker.exists():
-            strategy.append("aggressive_fetch_cached")
+            strategy.append("base_fetch_cached")
             self.last_prepare_strategy = ",".join(strategy)
             self.last_prepare_commands = commands
             return repo_cache
 
-        aggressive_fetches = [
+        base_fetches = [
             ["git", "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*", "--prune", "--force"],
             ["git", "fetch", "origin", "+refs/tags/*:refs/tags/*", "--prune", "--force"],
-            ["git", "fetch", "origin", "+refs/pull/*/head:refs/remotes/origin/pr/*/head", "--prune", "--force"],
-            ["git", "fetch", "origin", "+refs/pull/*/merge:refs/remotes/origin/pr/*/merge", "--prune", "--force"],
         ]
-        for command in aggressive_fetches:
+        for command in base_fetches:
             self._record(self._run(command, cwd=repo_cache), commands)
-        strategy.append("aggressive_fetch")
-        if all(command.get("returncode") == 0 for command in commands[-len(aggressive_fetches) :]):
+        strategy.append("base_fetch")
+        if all(command.get("returncode") == 0 for command in commands[-len(base_fetches) :]):
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text("ok\n", encoding="utf-8")
         self.last_prepare_strategy = ",".join(strategy)
@@ -172,10 +170,10 @@ class RobustRepoManager:
         return repo_cache
 
     def _cat_file_type(self, repo_cache: Path, commit: str) -> GitCommandResult:
-        return self._run(["git", "cat-file", "-t", commit], cwd=repo_cache)
+        return self._run(["env", "GIT_NO_LAZY_FETCH=1", "git", "cat-file", "-t", commit], cwd=repo_cache)
 
     def _tree_check(self, repo_cache: Path, commit: str) -> GitCommandResult:
-        return self._run(["git", "rev-parse", f"{commit}^{{tree}}"], cwd=repo_cache)
+        return self._run(["env", "GIT_NO_LAZY_FETCH=1", "git", "rev-parse", f"{commit}^{{tree}}"], cwd=repo_cache)
 
     def ensure_commit_available(self, repo_cache: Path, commit: str) -> CommitCheckResult:
         result = CommitCheckResult(commit=commit)

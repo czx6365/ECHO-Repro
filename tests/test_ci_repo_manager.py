@@ -21,7 +21,7 @@ def _result(command: list[str], returncode: int = 0, stdout: str = "", stderr: s
     return GitCommandResult(command=command, cwd="", returncode=returncode, stdout=stdout, stderr=stderr)
 
 
-def test_prepare_repo_clone_command_is_not_shallow(tmp_path: Path):
+def test_prepare_repo_clone_command_uses_partial_no_checkout_cache(tmp_path: Path):
     manager = FakeRepoManager(tmp_path)
 
     manager.prepare_repo("owner/repo")
@@ -29,13 +29,13 @@ def test_prepare_repo_clone_command_is_not_shallow(tmp_path: Path):
     clone_commands = [command for command in manager.commands if command[:2] == ["git", "clone"]]
     assert clone_commands
     clone = clone_commands[0]
-    assert "--no-single-branch" in clone
     assert "--depth" not in clone
-    assert "--filter" not in clone
+    assert "--filter=blob:none" in clone
+    assert "--no-checkout" in clone
 
 
 def test_missing_commit_object_classification(tmp_path: Path):
-    cat = ["git", "cat-file", "-t", "abc"]
+    cat = ["env", "GIT_NO_LAZY_FETCH=1", "git", "cat-file", "-t", "abc"]
     fetch_depth = ["git", "fetch", "origin", "abc", "--depth=1"]
     fetch_full = ["git", "fetch", "origin", "abc"]
     manager = FakeRepoManager(
@@ -56,8 +56,8 @@ def test_missing_commit_object_classification(tmp_path: Path):
 
 
 def test_missing_tree_object_classification(tmp_path: Path):
-    cat = ["git", "cat-file", "-t", "abc"]
-    tree = ["git", "rev-parse", "abc^{tree}"]
+    cat = ["env", "GIT_NO_LAZY_FETCH=1", "git", "cat-file", "-t", "abc"]
+    tree = ["env", "GIT_NO_LAZY_FETCH=1", "git", "rev-parse", "abc^{tree}"]
     fetch_depth = ["git", "fetch", "origin", "abc", "--depth=1"]
     fetch_full = ["git", "fetch", "origin", "abc"]
     manager = FakeRepoManager(

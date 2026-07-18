@@ -35,7 +35,7 @@ def _likely_cause(check: dict[str, Any], checkout_error: str, pr_refs: str) -> s
     if check.get("cat_file_type") == "commit" and check.get("tree_available"):
         if pr_refs:
             return "commit_available_in_pr_refs"
-        return "available_after_aggressive_fetch"
+        return "available_after_targeted_fetch"
     if check.get("missing_commit_object"):
         return "missing_commit_object"
     if check.get("missing_tree_object"):
