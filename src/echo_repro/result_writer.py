@@ -7,7 +7,7 @@ from pathlib import Path
 from echo_repro.models import FeedbackLoopAttempt, PipelineResult, PreparedRepos
 from echo_repro.validator import classify_execution
 
-SCHEMA_VERSION = "0.2"
+SCHEMA_VERSION = "0.3"
 
 
 def write_preparation_failure_record(
@@ -17,6 +17,9 @@ def write_preparation_failure_record(
     workdir: Path,
     cache_dir: Path | None = None,
     output_root: Path = Path("outputs"),
+    feedback_mode: str = "patch_aware",
+    native_oracle: str = "off",
+    native_test_timeout: int = 600,
 ) -> Path:
     instance_id = str(instance.get("instance_id", ""))
     output_dir = Path(output_root) / instance_id
@@ -45,6 +48,9 @@ def write_preparation_failure_record(
             "max_attempts": None,
             "retrieval_mode": "keyword",
             "executor": "subprocess",
+            "feedback_mode": feedback_mode,
+            "native_oracle": native_oracle,
+            "native_test_timeout": native_test_timeout,
         },
         "bug_spec": None,
         "retrieval": {
@@ -56,10 +62,14 @@ def write_preparation_failure_record(
         "environment_profile": None,
         "environment_repairs": [],
         "attempts_summary": [],
+        "native_oracle": None,
         "final_result": {
             "buggy_status": "repo_error",
             "fixed_status": None,
             "is_f2p": False,
+            "harness_f2p": False,
+            "native_f2p": None,
+            "verified_f2p": None,
             "failure_category": "repo_error",
             "reason": str(error),
         },
@@ -89,6 +99,7 @@ def _prompt_filename(action: str, attempt: int) -> str:
 
 
 def _attempt_records(result: PipelineResult) -> list[FeedbackLoopAttempt]:
+    strict = result.feedback_mode == "patch_blind"
     if result.attempts:
         return result.attempts
     synthesized = FeedbackLoopAttempt(
@@ -99,9 +110,9 @@ def _attempt_records(result: PipelineResult) -> list[FeedbackLoopAttempt]:
         llm_metadata=result.initial_harness_llm_metadata,
         harness_candidate=result.harness_candidate,
         buggy_execution=result.buggy_execution,
-        buggy_status=classify_execution(result.buggy_execution),
+        buggy_status=classify_execution(result.buggy_execution, strict=strict),
         fixed_execution=result.fixed_execution,
-        fixed_status=classify_execution(result.fixed_execution) if result.fixed_execution else None,
+        fixed_status=classify_execution(result.fixed_execution, strict=strict) if result.fixed_execution else None,
     )
     return [synthesized]
 
@@ -115,6 +126,7 @@ def write_experiment_record(
     retrieval_mode: str = "keyword",
     executor: str = "subprocess",
     output_root: Path = Path("outputs"),
+    native_test_timeout: int = 600,
 ) -> Path:
     output_dir = Path(output_root) / prepared.instance_id
     prompts_dir = output_dir / "prompts"
@@ -174,12 +186,24 @@ def write_experiment_record(
             handle.write(json.dumps(record) + "\n")
             attempt_summaries.append(record)
 
-    final_buggy_status = classify_execution(result.buggy_execution)
-    final_fixed_status = classify_execution(result.fixed_execution) if result.fixed_execution else None
+    final_buggy_status = classify_execution(result.buggy_execution, strict=result.feedback_mode == "patch_blind")
+    final_fixed_status = (
+        classify_execution(result.fixed_execution, strict=result.feedback_mode == "patch_blind")
+        if result.fixed_execution
+        else None
+    )
+    harness_f2p = bool(result.validation.success)
+    native_f2p = result.native_oracle.native_f2p if result.native_oracle else None
+    # verified_f2p is null whenever the native oracle produced no valid
+    # determination; it is never silently downgraded to false.
+    verified_f2p = None if native_f2p is None else (harness_f2p and native_f2p)
     final_result = {
         "buggy_status": final_buggy_status,
         "fixed_status": final_fixed_status,
         "is_f2p": result.validation.success,
+        "harness_f2p": harness_f2p,
+        "native_f2p": native_f2p,
+        "verified_f2p": verified_f2p,
         "failure_category": None if result.validation.success else final_buggy_status,
         "reason": result.validation.summary,
     }
@@ -205,6 +229,9 @@ def write_experiment_record(
             "max_attempts": max_attempts,
             "retrieval_mode": retrieval_mode,
             "executor": executor,
+            "feedback_mode": result.feedback_mode,
+            "native_oracle": result.native_oracle.mode if result.native_oracle else "off",
+            "native_test_timeout": native_test_timeout,
         },
         "bug_spec": result.bug_spec.model_dump(mode="json"),
         "retrieval": {
@@ -229,6 +256,7 @@ def write_experiment_record(
             if record["environment_repair"] is not None
         ],
         "attempts_summary": attempt_summaries,
+        "native_oracle": result.native_oracle.model_dump(mode="json") if result.native_oracle else None,
         "final_result": final_result,
     }
     result_json_path = output_dir / "result.json"

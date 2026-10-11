@@ -112,8 +112,12 @@ def test_feedback_loop_does_not_repair_dependency_errors():
 class FakeEnvironmentRepairManager:
     def __init__(self, python_path: Path):
         self.python_path = python_path
+        self.received_llm_client = None
+        self.received_repo_path = None
 
-    def repair_dependency(self, result: ExecutionResult) -> EnvironmentRepairResult:
+    def repair_dependency(self, result, llm_client=None, repo_path=None) -> EnvironmentRepairResult:
+        self.received_llm_client = llm_client
+        self.received_repo_path = repo_path
         return EnvironmentRepairResult(
             attempted=True,
             success=True,
@@ -124,6 +128,7 @@ class FakeEnvironmentRepairManager:
             install_command=[str(self.python_path), "-m", "pip", "install", "missing-module"],
             returncode=0,
             stdout="installed",
+            strategy="llm",
             reason="Dependency installed.",
         )
 
@@ -155,6 +160,7 @@ def test_feedback_loop_retries_after_successful_environment_repair(tmp_path: Pat
 
     monkeypatch.setattr(feedback_loop_module, "run_harness", fake_run_harness)
 
+    repair_manager = FakeEnvironmentRepairManager(repaired_python)
     result = run_feedback_loop(
         bug_spec=bug_spec,
         retrieved_context=retrieved_context,
@@ -164,7 +170,7 @@ def test_feedback_loop_retries_after_successful_environment_repair(tmp_path: Pat
         buggy_repo=Path("examples/mock_buggy_repo"),
         fixed_repo=Path("examples/mock_fixed_repo"),
         max_attempts=3,
-        environment_repair_manager=FakeEnvironmentRepairManager(repaired_python),
+        environment_repair_manager=repair_manager,
     )
 
     assert result.attempts[0].buggy_status == "dependency_error"
@@ -172,6 +178,113 @@ def test_feedback_loop_retries_after_successful_environment_repair(tmp_path: Pat
     assert result.attempts[0].environment_repair.success is True
     assert result.attempts[1].action == "environment_repair"
     assert result.validation.success is True
+    # the loop must hand the LLM client and buggy repo to the repair manager
+    assert repair_manager.received_llm_client is llm_client
+    assert repair_manager.received_repo_path == Path("examples/mock_buggy_repo")
+    assert "[llm]" in result.attempts[1].note
+
+
+def test_feedback_loop_retries_after_environment_repair_for_environment_error(
+    tmp_path: Path, monkeypatch
+):
+    # environment_error (ImportError / broken installation) must reach the
+    # repair manager too - the astropy instances die here and used to skip
+    # repair entirely.
+    _, _, bug_spec, retrieved_context, concise_context = _build_context()
+    llm_client = MissingDependencyMockLLM()
+    initial_harness = generate_harness(concise_context, llm_client)
+    repaired_python = tmp_path / "envs" / "demo" / "bin" / "python"
+
+    def fake_run_harness(repo_path: Path, command: str | None = None, timeout: int = 30) -> ExecutionResult:
+        assert command is not None
+        if str(repaired_python) not in command:
+            return ExecutionResult(
+                repo_path=repo_path,
+                command=command,
+                returncode=1,
+                stdout="",
+                stderr="ImportError: cannot import name '_parse_times' from partially initialized module 'astropy.time'",
+            )
+        stdout = "Issue resolved\n" if repo_path.name == "mock_fixed_repo" else "Issue reproduced\n"
+        return ExecutionResult(
+            repo_path=repo_path,
+            command=command,
+            returncode=0,
+            stdout=stdout,
+            stderr="",
+        )
+
+    monkeypatch.setattr(feedback_loop_module, "run_harness", fake_run_harness)
+
+    repair_manager = FakeEnvironmentRepairManager(repaired_python)
+    result = run_feedback_loop(
+        bug_spec=bug_spec,
+        retrieved_context=retrieved_context,
+        concise_context=concise_context,
+        initial_harness=initial_harness,
+        llm_client=llm_client,
+        buggy_repo=Path("examples/mock_buggy_repo"),
+        fixed_repo=Path("examples/mock_fixed_repo"),
+        max_attempts=3,
+        environment_repair_manager=repair_manager,
+    )
+
+    assert result.attempts[0].buggy_status == "environment_error"
+    assert result.attempts[0].environment_repair is not None
+    assert result.attempts[0].environment_repair.success is True
+    assert result.attempts[1].action == "environment_repair"
+    assert result.validation.success is True
+    assert repair_manager.received_llm_client is llm_client
+    assert repair_manager.received_repo_path == Path("examples/mock_buggy_repo")
+
+
+def test_feedback_loop_stops_after_failed_environment_repair_for_environment_error(
+    tmp_path: Path, monkeypatch
+):
+    # A repair that is attempted but fails (or a no-op because the stderr is
+    # unparseable) must stop the loop, not crash it.
+    _, _, bug_spec, retrieved_context, concise_context = _build_context()
+    llm_client = MissingDependencyMockLLM()
+    initial_harness = generate_harness(concise_context, llm_client)
+
+    def fake_run_harness(repo_path: Path, command: str | None = None, timeout: int = 30) -> ExecutionResult:
+        assert command is not None
+        return ExecutionResult(
+            repo_path=repo_path,
+            command=command,
+            returncode=1,
+            stdout="",
+            stderr="ImportError: broken installation: 'astropy' has not been built",
+        )
+
+    monkeypatch.setattr(feedback_loop_module, "run_harness", fake_run_harness)
+
+    class FailingRepairManager(FakeEnvironmentRepairManager):
+        def repair_dependency(self, result, llm_client=None, repo_path=None) -> EnvironmentRepairResult:
+            return EnvironmentRepairResult(
+                attempted=True,
+                success=False,
+                missing_module="",
+                package="",
+                reason="Could not parse missing module from stderr.",
+            )
+
+    result = run_feedback_loop(
+        bug_spec=bug_spec,
+        retrieved_context=retrieved_context,
+        concise_context=concise_context,
+        initial_harness=initial_harness,
+        llm_client=llm_client,
+        buggy_repo=Path("examples/mock_buggy_repo"),
+        fixed_repo=Path("examples/mock_fixed_repo"),
+        max_attempts=3,
+        environment_repair_manager=FailingRepairManager(Path("/nonexistent")),
+    )
+
+    assert len(result.attempts) == 1
+    assert result.attempts[0].buggy_status == "environment_error"
+    assert result.attempts[0].environment_repair.success is False
+    assert result.validation.success is False
 
 
 def test_feedback_loop_stops_at_max_attempts():

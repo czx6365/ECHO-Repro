@@ -10,6 +10,7 @@ from echo_repro.environment import (
     _legacy_runtime_constraints,
     _needs_astropy_build_ext_fallback,
     _needs_non_editable_fallback,
+    _needs_source_checkout_build_ext,
     dependency_files_for_repo,
     detect_python_version,
     find_python_executable,
@@ -18,7 +19,7 @@ from echo_repro.environment import (
     parse_missing_module,
     slugify_repo,
 )
-from echo_repro.models import ExecutionResult
+from echo_repro.models import EnvironmentRepairResult, ExecutionResult
 
 
 def test_parse_missing_module_from_modulenotfounderror():
@@ -72,6 +73,313 @@ def test_environment_repair_manager_uses_absolute_default_env_path(tmp_path: Pat
     assert manager.python_path == (tmp_path / "envs" / "demo__repo" / "bin" / "python").resolve()
 
 
+def test_repair_dependency_uses_era_suffixed_path_and_interpreter(tmp_path: Path, monkeypatch):
+    manager = EnvironmentRepairManager(repo_slug="demo/repo", env_root=tmp_path / "envs")
+    era_python = tmp_path / "python3.9"
+    era_python.touch()
+    monkeypatch.setattr(
+        environment_module, "detect_python_version", lambda repo_path, current_version=None: "3.9"
+    )
+    monkeypatch.setattr(
+        environment_module, "find_python_executable", lambda version, base_python: era_python
+    )
+    calls = []
+
+    def fake_run_cmd(cmd, cwd=None, timeout=300, env=None):
+        calls.append((cmd, env))
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(environment_module, "run_cmd", fake_run_cmd)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    repair = manager.repair_dependency(
+        _repair_result("ModuleNotFoundError: No module named 'numpy'"), repo_path=repo
+    )
+
+    assert repair.env_path == (tmp_path / "envs" / "demo__repo-py39").resolve()
+    assert repair.detected_python == "3.9"
+    create_cmd = calls[0][0]
+    assert create_cmd[0] == str(era_python)
+    assert create_cmd[1:] == ["-m", "venv", str(manager.env_path)]
+    install_calls = [call for call in calls if "-m" in call[0] and "install" in call[0]]
+    assert install_calls and install_calls[0][1] is not None
+    assert "incompatible-function-pointer-types" in install_calls[0][1]["CFLAGS"]
+    assert repair.install_command[0] == str(manager.python_path)
+
+
+def test_repair_dependency_era_missing_interpreter_falls_back(tmp_path: Path, monkeypatch):
+    manager = EnvironmentRepairManager(repo_slug="demo/repo", env_root=tmp_path / "envs")
+    monkeypatch.setattr(
+        environment_module, "detect_python_version", lambda repo_path, current_version=None: "3.9"
+    )
+    monkeypatch.setattr(
+        environment_module, "find_python_executable", lambda version, base_python: None
+    )
+    calls = []
+
+    def fake_run_cmd(cmd, cwd=None, timeout=300, env=None):
+        calls.append((cmd, env))
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(environment_module, "run_cmd", fake_run_cmd)
+
+    repair = manager.repair_dependency(
+        _repair_result("ModuleNotFoundError: No module named 'numpy'"), repo_path=tmp_path
+    )
+
+    assert repair.env_path == (tmp_path / "envs" / "demo__repo").resolve()
+    assert calls[0][0][0] == str(manager.base_python)
+    assert calls[1][1] is None  # no CFLAGS env on fallback
+
+
+def test_repair_dependency_host_version_keeps_bare_path(tmp_path: Path, monkeypatch):
+    manager = EnvironmentRepairManager(repo_slug="demo/repo", env_root=tmp_path / "envs")
+    import sys as _sys
+
+    host = f"{_sys.version_info.major}.{_sys.version_info.minor}"
+    monkeypatch.setattr(
+        environment_module, "detect_python_version", lambda repo_path, current_version=None: host
+    )
+
+    def boom(version, base_python):
+        raise AssertionError("find_python_executable must not run for the host version")
+
+    monkeypatch.setattr(environment_module, "find_python_executable", boom)
+    calls = []
+
+    def fake_run_cmd(cmd, cwd=None, timeout=300, env=None):
+        calls.append((cmd, env))
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(environment_module, "run_cmd", fake_run_cmd)
+
+    repair = manager.repair_dependency(
+        _repair_result("ModuleNotFoundError: No module named 'numpy'"), repo_path=tmp_path
+    )
+
+    assert repair.env_path == (tmp_path / "envs" / "demo__repo").resolve()
+    assert calls[0][0][0] == str(manager.base_python)
+    assert calls[1][1] is None
+
+
+def _repair_result(stderr: str) -> ExecutionResult:
+    return ExecutionResult(
+        repo_path=Path("/tmp/demo_repo"),
+        command="python reproduce.py",
+        returncode=1,
+        stdout="",
+        stderr=stderr,
+    )
+
+
+def _manager_with_existing_venv(tmp_path: Path) -> EnvironmentRepairManager:
+    manager = EnvironmentRepairManager(repo_slug="demo/repo", env_root=tmp_path / "envs")
+    manager.env_path.mkdir(parents=True)
+    (manager.env_path / "bin").mkdir()
+    (manager.env_path / "bin" / "python").touch()
+    return manager
+
+
+def test_mechanical_repair_marks_strategy(tmp_path: Path, monkeypatch):
+    manager = _manager_with_existing_venv(tmp_path)
+    monkeypatch.setattr(
+        environment_module,
+        "run_cmd",
+        lambda cmd, cwd=None, timeout=300, env=None: subprocess.CompletedProcess(
+            cmd, 0, stdout="installed", stderr=""
+        ),
+    )
+
+    repair = manager.repair_dependency(_repair_result("ModuleNotFoundError: No module named 'numpy'"))
+
+    assert repair.success is True
+    assert repair.strategy == "mechanical"
+    assert repair.package == "numpy"
+
+
+def test_mechanical_repair_survives_timeout_expired(tmp_path: Path, monkeypatch):
+    manager = _manager_with_existing_venv(tmp_path)
+
+    def fake_run_cmd(cmd, cwd=None, timeout=300, env=None):
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(environment_module, "run_cmd", fake_run_cmd)
+
+    repair = manager.repair_dependency(_repair_result("ModuleNotFoundError: No module named 'numpy'"))
+
+    assert repair.success is False
+    assert repair.strategy == "mechanical"
+    assert repair.returncode == -1
+
+
+def test_repair_dependency_dispatches_to_llm_when_available(tmp_path: Path, monkeypatch):
+    import echo_repro.dependency_repair as dependency_repair_module
+
+    manager = _manager_with_existing_venv(tmp_path)
+    canned = EnvironmentRepairResult(
+        attempted=True,
+        success=True,
+        missing_module="numpy",
+        package="numpy",
+        strategy="llm",
+        reason="LLM-driven dependency installation succeeded.",
+    )
+    captured = {}
+
+    def fake_install_with_llm(mgr, result, repo_path, llm_client):
+        captured["manager"] = mgr
+        captured["repo_path"] = repo_path
+        captured["llm_client"] = llm_client
+        return canned
+
+    monkeypatch.setattr(dependency_repair_module, "install_with_llm", fake_install_with_llm)
+
+    client = object()
+    repair = manager.repair_dependency(
+        _repair_result("ModuleNotFoundError: No module named 'numpy'"),
+        llm_client=client,
+        repo_path=tmp_path / "repo",
+    )
+
+    assert repair is canned
+    assert captured["manager"] is manager
+    assert captured["repo_path"] == tmp_path / "repo"
+    assert captured["llm_client"] is client
+
+
+def test_repair_dependency_falls_back_to_mechanical_without_client(tmp_path: Path, monkeypatch):
+    import echo_repro.dependency_repair as dependency_repair_module
+
+    manager = _manager_with_existing_venv(tmp_path)
+    called = []
+
+    def fake_install_with_llm(mgr, result, repo_path, llm_client):
+        called.append(True)
+        return EnvironmentRepairResult(success=True)
+
+    monkeypatch.setattr(dependency_repair_module, "install_with_llm", fake_install_with_llm)
+    monkeypatch.setattr(
+        environment_module,
+        "run_cmd",
+        lambda cmd, cwd=None, timeout=300, env=None: subprocess.CompletedProcess(
+            cmd, 0, stdout="installed", stderr=""
+        ),
+    )
+
+    repair = manager.repair_dependency(_repair_result("ModuleNotFoundError: No module named 'numpy'"))
+
+    assert called == []
+    assert repair.strategy == "mechanical"
+
+
+def test_venv_creation_failure_does_not_call_llm(tmp_path: Path, monkeypatch):
+    import echo_repro.dependency_repair as dependency_repair_module
+
+    manager = EnvironmentRepairManager(repo_slug="demo/repo", env_root=tmp_path / "envs")
+    called = []
+    monkeypatch.setattr(dependency_repair_module, "install_with_llm", lambda *a, **k: called.append(True))
+    monkeypatch.setattr(
+        environment_module,
+        "run_cmd",
+        lambda cmd, cwd=None, timeout=300, env=None: subprocess.CompletedProcess(
+            cmd, 1, stdout="", stderr="venv creation failed"
+        ),
+    )
+
+    repair = manager.repair_dependency(
+        _repair_result("ModuleNotFoundError: No module named 'numpy'"),
+        llm_client=object(),
+        repo_path=tmp_path / "repo",
+    )
+
+    assert called == []
+    assert repair.success is False
+    assert "venv" in repair.reason.lower() or "virtual environment" in repair.reason
+
+
+def test_needs_source_checkout_build_ext_detects_astropy_message():
+    stderr = (
+        "ImportError: You appear to be trying to import astropy from within a "
+        "source checkout or from an editable installation without building the "
+        "extension modules first. Either run:\n\n"
+        "  pip install -e .\n\nor\n\n  python setup.py build_ext --inplace\n"
+    )
+    assert _needs_source_checkout_build_ext(stderr) is True
+    assert _needs_source_checkout_build_ext("ModuleNotFoundError: No module named 'numpy'") is False
+
+
+ASTROPY_CHECKOUT_STDERR = (
+    "Traceback (most recent call last):\n"
+    "  File \"/repo/reproduce.py\", line 9, in main\n"
+    "    from astropy.table import Table\n"
+    "ImportError: You appear to be trying to import astropy from within a source checkout "
+    "or from an editable installation without building the extension modules first. Either run:\n\n"
+    "  pip install -e .\n\nor\n\n  python setup.py build_ext --inplace\n"
+)
+
+
+def test_repair_dependency_builds_source_checkout_extensions(tmp_path: Path, monkeypatch):
+    manager = _manager_with_existing_venv(tmp_path)
+    calls = []
+
+    def fake_run_cmd(cmd, cwd=None, timeout=300, env=None):
+        calls.append((cmd, cwd, timeout, env))
+        return subprocess.CompletedProcess(cmd, 0, stdout="installed", stderr="")
+
+    monkeypatch.setattr(environment_module, "run_cmd", fake_run_cmd)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    repair = manager.repair_dependency(
+        _repair_result(ASTROPY_CHECKOUT_STDERR), repo_path=repo
+    )
+
+    assert repair.success is True
+    assert repair.strategy == "mechanical"
+    assert repair.install_command[1:] == ["-m", "pip", "install", "-e", "."]
+    assert calls and calls[0][1] == repo
+    assert calls[0][2] == 900
+
+
+def test_repair_dependency_retries_source_checkout_build_on_failure(tmp_path: Path, monkeypatch):
+    manager = _manager_with_existing_venv(tmp_path)
+    attempts = []
+
+    def fake_run_cmd(cmd, cwd=None, timeout=300, env=None):
+        attempts.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="build failed")
+
+    monkeypatch.setattr(environment_module, "run_cmd", fake_run_cmd)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    first = manager.repair_dependency(_repair_result(ASTROPY_CHECKOUT_STDERR), repo_path=repo)
+    second = manager.repair_dependency(_repair_result(ASTROPY_CHECKOUT_STDERR), repo_path=repo)
+
+    assert first.success is False
+    assert second.success is False
+    assert len(attempts) == 2  # failure resets _source_build_done so a later round retries
+
+
+def test_repair_dependency_does_not_rebuild_after_success(tmp_path: Path, monkeypatch):
+    manager = _manager_with_existing_venv(tmp_path)
+    attempts = []
+
+    def fake_run_cmd(cmd, cwd=None, timeout=300, env=None):
+        attempts.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="installed", stderr="")
+
+    monkeypatch.setattr(environment_module, "run_cmd", fake_run_cmd)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    manager.repair_dependency(_repair_result(ASTROPY_CHECKOUT_STDERR), repo_path=repo)
+    manager.repair_dependency(_repair_result(ASTROPY_CHECKOUT_STDERR), repo_path=repo)
+
+    assert len(attempts) == 1  # success marks _source_build_done; no second build
+
+
 def test_dependency_hash_changes_with_environment_files(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -111,6 +419,33 @@ def test_detect_python_version_caps_distutils_projects_at_python_311(tmp_path: P
     )
 
     assert detect_python_version(repo, current_version="3.14") == "3.11"
+
+
+def test_detect_python_version_caps_imp_projects_at_python_311(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "setup.py").write_text(
+        "from setuptools import setup\nsetup(python_requires='>=3.6')\n",
+        encoding="utf-8",
+    )
+    package = repo / "package"
+    package.mkdir()
+    (package / "compat.py").write_text(
+        "import imp\nimp.reload(sys)\n",
+        encoding="utf-8",
+    )
+
+    assert detect_python_version(repo, current_version="3.14") == "3.11"
+
+
+def test_detect_python_version_does_not_flag_importlib_as_imp(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    package = repo / "package"
+    package.mkdir()
+    (package / "mod.py").write_text("import importlib\n", encoding="utf-8")
+
+    assert detect_python_version(repo, current_version="3.14") == "3.14"
 
 
 def test_detect_python_version_caps_removed_collections_abc_imports_at_python_39(tmp_path: Path):
@@ -235,7 +570,11 @@ def test_environment_profile_does_not_reuse_stale_astropy_marker(tmp_path: Path,
     repo.mkdir()
     (repo / "setup.py").write_text("from setuptools import setup\nsetup()\n", encoding="utf-8")
     env_root = tmp_path / "envs"
-    env_path = env_root / "astropy__astropy-py314-468fc3f6f8be"
+    # prepare_profile derives the profile key from detect_python_version(repo)
+    # on the current interpreter, so the env dir must follow the same
+    # computation instead of hard-coding a Python version.
+    detected = detect_python_version(repo)
+    env_path = env_root / f"astropy__astropy-py{detected.replace('.', '')}-468fc3f6f8be"
     python_path = env_path / "bin" / "python"
     python_path.parent.mkdir(parents=True)
     python_path.write_text("#!/bin/sh\n", encoding="utf-8")

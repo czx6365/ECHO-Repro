@@ -183,6 +183,10 @@ def _uses_stdlib_distutils(repo_path: Path) -> bool:
     return _repo_python_text_matches(repo_path, r"(?m)^\s*(from\s+distutils\b|import\s+distutils\b)")
 
 
+def _uses_stdlib_imp(repo_path: Path) -> bool:
+    return _repo_python_text_matches(repo_path, r"(?m)^\s*(from\s+imp\b|import\s+imp\b)")
+
+
 def _uses_removed_collections_abc_imports(repo_path: Path) -> bool:
     return _repo_python_text_matches(
         repo_path,
@@ -228,6 +232,8 @@ def detect_python_version(repo_path: Path, current_version: str | None = None) -
     if _version_tuple(detected) > (3, 9) and _uses_removed_collections_abc_imports(repo_path):
         return "3.9"
     if _version_tuple(detected) > (3, 11) and _uses_stdlib_distutils(repo_path):
+        return "3.11"
+    if _version_tuple(detected) > (3, 11) and _uses_stdlib_imp(repo_path):
         return "3.11"
     return detected
 
@@ -325,6 +331,17 @@ def _needs_astropy_build_ext_fallback(result: subprocess.CompletedProcess) -> bo
         "Failed building wheel for astropy" in output
         or "Failed to build installable wheels" in output and "astropy" in output
     )
+
+
+def _needs_source_checkout_build_ext(stderr: str) -> bool:
+    """astropy-style failure: importing from an unbuilt source checkout.
+
+    No pip install of dependencies can fix this - the checkout's own
+    extension modules must be built in place. Matches astropy's canonical
+    message ("import ... from within a source checkout ... without building
+    the extension modules first").
+    """
+    return "source checkout" in stderr and "build_ext" in stderr
 
 
 def _legacy_runtime_constraints(repo_slug: str, repo_path: Path) -> list[str]:
@@ -626,33 +643,78 @@ class EnvironmentRepairManager:
     env_root: Path = Path("envs")
     base_python: Path = field(default_factory=lambda: Path(sys.executable))
     env_path_override: Path | None = None
+    _env_path: Path | None = field(default=None, init=False, repr=False)
+    _detected_python: str = field(default="", init=False, repr=False)
+    _era_interpreter: Path | None = field(default=None, init=False, repr=False)
+    _install_env: dict[str, str] | None = field(default=None, init=False, repr=False)
+    _source_build_done: bool = field(default=False, init=False, repr=False)
 
     @property
     def env_path(self) -> Path:
         if self.env_path_override:
             return Path(self.env_path_override).resolve()
+        if self._env_path is not None:
+            return self._env_path
         return (Path(self.env_root) / slugify_repo(self.repo_slug)).resolve()
+
+    def _resolve_env_path(self, repo_path: Path | None) -> Path:
+        """Resolve the cached-venv path, switching to an era Python when the repo needs one.
+
+        Idempotent: resolution runs once per manager (repair_dependency may be
+        called once per attempt). Era detection happens only when repo_path is
+        provided; every fallback preserves the historical bare-path behavior.
+        """
+        if self._env_path is not None or self.env_path_override:
+            return self.env_path
+        host_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+        if repo_path is None:
+            return self.env_path
+        detected = detect_python_version(Path(repo_path))
+        self._detected_python = detected
+        if detected == host_version:
+            return self.env_path
+        interpreter = find_python_executable(detected, Path(self.base_python))
+        if interpreter is None:
+            # No era interpreter available: keep today's behavior exactly.
+            return self.env_path
+        self._era_interpreter = interpreter
+        self._install_env = _legacy_build_env()
+        return (
+            Path(self.env_root) / f"{slugify_repo(self.repo_slug)}-py{detected.replace('.', '')}"
+        ).resolve()
 
     @property
     def python_path(self) -> Path:
         return venv_python(self.env_path)
 
-    def repair_dependency(self, result: ExecutionResult) -> EnvironmentRepairResult:
+    def repair_dependency(
+        self,
+        result: ExecutionResult,
+        llm_client=None,
+        repo_path: Path | None = None,
+    ) -> EnvironmentRepairResult:
         missing_module = parse_missing_module(result.stderr)
-        if not missing_module:
+        source_checkout = (
+            repo_path is not None
+            and not self._source_build_done
+            and not missing_module
+            and _needs_source_checkout_build_ext(result.stderr)
+        )
+        if not missing_module and not source_checkout:
             return EnvironmentRepairResult(
                 attempted=False,
                 success=False,
                 reason="Could not parse missing module from stderr.",
             )
 
-        package = package_for_module(missing_module)
-        env_path = self.env_path
+        package = package_for_module(missing_module) if missing_module else ""
+        env_path = self._resolve_env_path(repo_path)
+        self._env_path = env_path
         python_path = self.python_path
 
         if not python_path.exists():
             env_path.parent.mkdir(parents=True, exist_ok=True)
-            create_cmd = [str(self.base_python), "-m", "venv", str(env_path)]
+            create_cmd = [str(self._era_interpreter or Path(self.base_python)), "-m", "venv", str(env_path)]
             create = run_cmd(create_cmd)
             if create.returncode != 0:
                 return EnvironmentRepairResult(
@@ -666,11 +728,70 @@ class EnvironmentRepairManager:
                     returncode=create.returncode,
                     stdout=create.stdout,
                     stderr=create.stderr,
+                    detected_python=self._detected_python,
                     reason="Failed to create cached virtual environment.",
                 )
 
+        if source_checkout:
+            # Deterministic fix for the astropy-style wall: the harness runs
+            # inside the repo checkout, whose extension modules were never
+            # built. Installing dependencies cannot help - build in place.
+            self._source_build_done = True
+            install_cmd = [str(python_path), "-m", "pip", "install", "-e", "."]
+            try:
+                installed = run_cmd(
+                    install_cmd,
+                    cwd=repo_path,
+                    env=self._install_env,
+                    timeout=900,
+                )
+            except subprocess.TimeoutExpired:
+                installed = subprocess.CompletedProcess(
+                    install_cmd,
+                    -1,
+                    stdout="",
+                    stderr="pip install -e . timed out.",
+                )
+            if installed.returncode != 0:
+                # Allow a later round to retry the build.
+                self._source_build_done = False
+            return EnvironmentRepairResult(
+                attempted=True,
+                success=installed.returncode == 0,
+                missing_module=missing_module or "",
+                package=package,
+                env_path=env_path,
+                python_path=python_path,
+                install_command=install_cmd,
+                returncode=installed.returncode,
+                stdout=installed.stdout,
+                stderr=installed.stderr,
+                strategy="mechanical",
+                detected_python=self._detected_python,
+                reason=(
+                    "Source checkout needs its extension modules built; ran pip install -e ."
+                    if installed.returncode == 0
+                    else "Source checkout build failed."
+                ),
+            )
+
+        if llm_client is not None and repo_path is not None:
+            from echo_repro.dependency_repair import install_with_llm
+
+            llm_result = install_with_llm(self, result, repo_path, llm_client)
+            if llm_result is not None:
+                return llm_result
+
         install_cmd = [str(python_path), "-m", "pip", "install", package]
-        installed = run_cmd(install_cmd)
+        try:
+            installed = run_cmd(install_cmd, env=self._install_env)
+        except subprocess.TimeoutExpired:
+            installed = subprocess.CompletedProcess(
+                install_cmd,
+                -1,
+                stdout="",
+                stderr="pip install timed out.",
+            )
         return EnvironmentRepairResult(
             attempted=True,
             success=installed.returncode == 0,
@@ -682,5 +803,7 @@ class EnvironmentRepairManager:
             returncode=installed.returncode,
             stdout=installed.stdout,
             stderr=installed.stderr,
+            strategy="mechanical",
+            detected_python=self._detected_python,
             reason="Dependency installed." if installed.returncode == 0 else "Dependency installation failed.",
         )

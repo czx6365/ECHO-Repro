@@ -65,6 +65,29 @@ def test_anthropic_client_requires_api_key():
         AnthropicCompatibleLLMClient(settings=settings, transport=lambda *args: {})
 
 
+def test_default_transport_hung_urlopen_fails_fast_without_retry(monkeypatch):
+    import time
+
+    monkeypatch.setattr("echo_repro.llm.anthropic_client._HANG_GRACE_SECONDS", 1)
+    calls = []
+
+    def hung_urlopen(request, timeout):
+        calls.append(True)
+        time.sleep(600)
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr("echo_repro.llm.anthropic_client.urllib.request.urlopen", hung_urlopen)
+
+    started = time.monotonic()
+    with pytest.raises(ValueError, match="hung"):
+        _default_transport("https://example.invalid/v1/messages", {}, {"model": "demo"}, 1)
+
+    # 墙钟上限:1s 超时 + 1s 宽限,而不是等 600s 的假 urlopen 返回
+    assert time.monotonic() - started < 5
+    # 挂死直接失败,不进入重试循环
+    assert calls == [True]
+
+
 def test_default_transport_retries_transient_url_errors(monkeypatch):
     monkeypatch.setattr("echo_repro.llm.anthropic_client.time.sleep", lambda _: None)
     calls = []

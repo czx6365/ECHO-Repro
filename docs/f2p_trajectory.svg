@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 420" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" role="img" aria-labelledby="title desc">
+  <title id="title">F2P 提升轨迹（n=300）</title>
+  <desc id="desc">SWE-bench Lite 300 实例中 fail-to-pass 通过数随迭代阶段的提升：60 → 139 → 142 → 177 → 188。</desc>
+  <style>
+    .viz-root {
+      color-scheme: light;
+      --surface-1:      #fcfcfb;
+      --text-primary:   #0b0b0b;
+      --text-secondary: #52514e;
+      --text-muted:     #898781;
+      --gridline:       #e1e0d9;
+      --baseline:       #c3c2b7;
+      --series-1:       #2a78d6;
+      --delta-up:       #006300;
+    }
+    @media (prefers-color-scheme: dark) {
+      .viz-root:where(:not([data-theme="light"])) {
+        color-scheme: dark;
+        --surface-1:      #1a1a19;
+        --text-primary:   #ffffff;
+        --text-secondary: #c3c2b7;
+        --text-muted:     #898781;
+        --gridline:       #2c2c2a;
+        --baseline:       #383835;
+        --series-1:       #3987e5;
+        --delta-up:       #0ca30c;
+      }
+    }
+    .viz-root[data-theme="dark"] {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --gridline:       #2c2c2a;
+      --baseline:       #383835;
+      --series-1:       #3987e5;
+      --delta-up:       #0ca30c;
+    }
+    .title    { fill: var(--text-primary);   font-size: 15px; font-weight: 600; }
+    .axis-lbl { fill: var(--text-muted);     font-size: 11px; }
+    .x-lbl    { fill: var(--text-secondary); font-size: 11px; text-anchor: middle; }
+    .x-lbl-sub{ fill: var(--text-muted);     font-size: 10px; text-anchor: middle; }
+    .value    { fill: var(--text-primary);   font-size: 12px; font-weight: 600; text-anchor: middle; }
+    .delta    { fill: var(--delta-up);       font-size: 10px; font-weight: 600; text-anchor: middle; }
+    .grid     { stroke: var(--gridline);     stroke-width: 1; }
+    .axis     { stroke: var(--baseline);     stroke-width: 1; }
+    .line     { stroke: var(--series-1);     stroke-width: 2; fill: none; stroke-linejoin: round; stroke-linecap: round; }
+    .dot      { fill: var(--series-1);       stroke: var(--surface-1); stroke-width: 2; }
+  </style>
+
+  <g class="viz-root">
+    <rect x="0" y="0" width="760" height="420" fill="var(--surface-1)" rx="8"/>
+    <text x="64" y="32" class="title">F2P 提升轨迹（SWE-bench Lite，n = 300）</text>
+
+    <!-- plot area: x 64..700, y 56..316 (value 0..300 -> 316..56) -->
+    <!-- gridlines every 50 -->
+    <g class="grid">
+      <line x1="64"  y1="316" x2="700" y2="316"/>
+      <line x1="64"  y1="272.7" x2="700" y2="272.7"/>
+      <line x1="64"  y1="229.3" x2="700" y2="229.3"/>
+      <line x1="64"  y1="186"  x2="700" y2="186"/>
+      <line x1="64"  y1="142.7" x2="700" y2="142.7"/>
+      <line x1="64"  y1="99.3" x2="700" y2="99.3"/>
+      <line x1="64"  y1="56"  x2="700" y2="56"/>
+    </g>
+    <g class="axis-lbl" text-anchor="end">
+      <text x="56" y="320">0</text>
+      <text x="56" y="190">150</text>
+      <text x="56" y="60">300</text>
+    </g>
+
+    <!-- y = 316 - v/300 * 260 ; x = 100, 250, 400, 550, 700 -->
+    <!-- points: 60->264, 139->195.5, 142->192.9, 177->162.6, 188->153.1 -->
+    <polyline class="line" points="100,264 250,195.5 400,192.9 550,162.6 700,153.1"/>
+    <g class="dot">
+      <circle cx="100" cy="264"   r="5"/>
+      <circle cx="250" cy="195.5" r="5"/>
+      <circle cx="400" cy="192.9" r="5"/>
+      <circle cx="550" cy="162.6" r="5"/>
+      <circle cx="700" cy="153.1" r="5"/>
+    </g>
+
+    <!-- value labels above points, delta below the value -->
+    <text x="100" y="250" class="value">60</text>
+    <text x="250" y="181.5" class="value">139</text>
+    <text x="251" y="167.5" class="delta">+79</text>
+    <text x="400" y="178.9" class="value">142</text>
+    <text x="401" y="164.9" class="delta">+3</text>
+    <text x="550" y="148.6" class="value">177</text>
+    <text x="551" y="134.6" class="delta">+35</text>
+    <text x="700" y="139.1" class="value">188</text>
+    <text x="701" y="125.1" class="delta">+11</text>
+
+    <!-- x axis -->
+    <line x1="64" y1="316" x2="700" y2="316" class="axis"/>
+    <g>
+      <text x="100" y="334" class="x-lbl">基线首跑</text>
+      <text x="100" y="348" class="x-lbl-sub">10/4</text>
+      <text x="250" y="334" class="x-lbl">LLM 依赖修复</text>
+      <text x="250" y="348" class="x-lbl-sub">10/5–10/8</text>
+      <text x="400" y="334" class="x-lbl">era-Python venv</text>
+      <text x="400" y="348" class="x-lbl-sub">10/9</text>
+      <text x="550" y="334" class="x-lbl">era 合并重跑</text>
+      <text x="550" y="348" class="x-lbl-sub">10/9–10/10</text>
+      <text x="700" y="334" class="x-lbl">NO_RECORD 清理</text>
+      <text x="700" y="348" class="x-lbl-sub">10/10</text>
+    </g>
+    <text x="64" y="380" class="axis-lbl" fill="var(--text-muted)">F2P = 复现成功且修复版通过（final_result.is_f2p）；每次迭代均保留既有结果、只重跑失败实例</text>
+  </g>
+</svg>
