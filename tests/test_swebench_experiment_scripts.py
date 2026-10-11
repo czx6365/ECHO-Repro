@@ -70,8 +70,84 @@ def test_summarize_swebench_experiment_handles_missing_and_existing_results(tmp_
     assert rows[0]["fixed passed?"] == "yes"
     assert rows[0]["cost"] == "25"
     assert rows[0]["attempts"] == "2"
+    # pre-0.3 records without the new fields stay readable
+    assert rows[0]["feedback mode"] == "unknown"
+    assert rows[0]["harness F2P"] == "pending"
+    assert rows[0]["native oracle status"] == "unknown"
+    assert rows[0]["native F2P"] == "pending"
+    assert rows[0]["verified F2P"] == "pending"
     assert rows[1]["prepared?"] == "pending"
     assert rows[1]["failure category"] == "not_run"
+
+
+def test_summarize_swebench_experiment_reads_native_oracle_fields(tmp_path: Path):
+    module = _load_script_module("summarize_swebench_experiment.py")
+    result_dir = tmp_path / "outputs" / "demo__repo-n"
+    result_dir.mkdir(parents=True)
+    (result_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "instance_metadata": {"repo": "demo/repo", "repo_validated": True},
+                "run_config": {"feedback_mode": "patch_blind"},
+                "environment_repairs": [],
+                "attempts_summary": [],
+                "native_oracle": {"mode": "pytest", "status": "confirmed", "native_f2p": True},
+                "final_result": {
+                    "buggy_status": "reproduced",
+                    "fixed_status": "resolved",
+                    "is_f2p": True,
+                    "harness_f2p": True,
+                    "native_f2p": True,
+                    "verified_f2p": True,
+                    "failure_category": None,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    row = module.summarize_instance(
+        {"instance_id": "demo__repo-n", "repo": "demo/repo"},
+        tmp_path / "outputs",
+    )
+
+    assert row["feedback mode"] == "patch_blind"
+    assert row["harness F2P"] == "yes"
+    assert row["native oracle status"] == "confirmed"
+    assert row["native F2P"] == "yes"
+    assert row["verified F2P"] == "yes"
+
+
+def test_summarize_swebench_experiment_legacy_020_still_summarizes(tmp_path: Path):
+    module = _load_script_module("summarize_swebench_experiment.py")
+    result_dir = tmp_path / "outputs" / "legacy__repo-020"
+    result_dir.mkdir(parents=True)
+    (result_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "instance_metadata": {"repo": "legacy/repo", "repo_validated": True},
+                "attempts_summary": [],
+                "final_result": {
+                    "buggy_status": "reproduced",
+                    "fixed_status": "resolved",
+                    "is_f2p": True,
+                    "failure_category": None,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    row = module.summarize_instance(
+        {"instance_id": "legacy__repo-020", "repo": "legacy/repo"},
+        tmp_path / "outputs",
+    )
+
+    assert row["feedback mode"] == "unknown"
+    assert row["harness F2P"] == "yes"  # falls back to legacy is_f2p
+    assert row["native oracle status"] == "unknown"
+    assert row["native F2P"] == "pending"
+    assert row["verified F2P"] == "pending"
 
 
 def test_summarize_swebench_experiment_marks_legacy_results_as_unknown(tmp_path: Path):

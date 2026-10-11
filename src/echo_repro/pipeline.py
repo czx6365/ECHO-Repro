@@ -14,7 +14,7 @@ from echo_repro.llm.anthropic_client import AnthropicCompatibleLLMClient
 from echo_repro.llm.base import BaseLLMClient
 from echo_repro.llm.mock_client import MockLLMClient
 from echo_repro.llm.openai_client import OpenAICompatibleLLMClient
-from echo_repro.models import LLMCallMetadata, PipelineResult
+from echo_repro.models import LLMCallMetadata, PipelineResult, FeedbackMode
 from echo_repro.retriever import retrieve_context
 from echo_repro.validator import classify_execution, validate_fail_to_pass
 from echo_repro.config import get_llm_settings
@@ -56,6 +56,7 @@ def _select_initial_harness(
     buggy_repo: Path,
     python_executable: Path,
     candidate_count: int = 3,
+    strict: bool = False,
 ):
     best = None
     for _ in range(max(1, candidate_count)):
@@ -67,7 +68,7 @@ def _select_initial_harness(
             buggy_repo,
             command=f"{shlex.quote(str(python_executable))} {shlex.quote(candidate.filename)}",
         )
-        status = classify_execution(execution)
+        status = classify_execution(execution, strict=strict)
         item = (candidate, prompt, metadata, status)
         if best is None or _candidate_rank(status) < _candidate_rank(best[3]):
             best = item
@@ -83,7 +84,11 @@ def run_pipeline(
     fixed_repo: Path | None = None,
     use_mock_llm: bool = True,
     llm_provider: str | None = None,
+    feedback_mode: FeedbackMode = "patch_aware",
 ) -> PipelineResult:
+    # library default stays patch_aware for legacy callers; the CLI always
+    # passes its own protocol choice explicitly.
+    strict = feedback_mode == "patch_blind"
     llm_client = _make_llm_client(use_mock_llm, llm_provider=llm_provider)
     bug_spec = extract_bug_spec(issue_text, llm_client)
     bug_spec_prompt = llm_client.last_prompt
@@ -95,6 +100,7 @@ def run_pipeline(
         llm_client,
         Path(buggy_repo),
         Path(sys.executable),
+        strict=strict,
     )
 
     write_harness(buggy_repo, harness_candidate, filename=harness_candidate.filename)
@@ -111,11 +117,12 @@ def run_pipeline(
             command=f"{sys.executable} {harness_candidate.filename}",
         )
 
-    validation = validate_fail_to_pass(buggy_execution, fixed_execution)
+    validation = validate_fail_to_pass(buggy_execution, fixed_execution, strict=strict)
     return PipelineResult(
         llm_provider=llm_provider or ("mock" if use_mock_llm else "openai"),
         llm_model=_client_model_name(llm_client),
         llm_temperature=_client_temperature(llm_client),
+        feedback_mode=feedback_mode,
         bug_spec_prompt=bug_spec_prompt,
         bug_spec_llm_metadata=bug_spec_llm_metadata,
         initial_harness_prompt=initial_harness_prompt,
@@ -139,6 +146,7 @@ def run_pipeline_with_feedback_loop(
     llm_provider: str | None = None,
     environment_repair_manager: EnvironmentRepairManager | None = None,
     environment_profile_manager: EnvironmentProfileManager | None = None,
+    feedback_mode: FeedbackMode = "patch_aware",
 ) -> PipelineResult:
     environment_profile = None
     initial_python_executable = None
@@ -160,6 +168,7 @@ def run_pipeline_with_feedback_loop(
         llm_client,
         Path(buggy_repo),
         Path(initial_python_executable or sys.executable),
+        strict=feedback_mode == "patch_blind",
     )
     return run_feedback_loop(
         bug_spec=bug_spec,
@@ -180,4 +189,5 @@ def run_pipeline_with_feedback_loop(
         environment_repair_manager=environment_repair_manager,
         initial_python_executable=initial_python_executable,
         environment_profile=environment_profile,
+        feedback_mode=feedback_mode,
     )

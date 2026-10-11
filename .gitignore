@@ -20,6 +20,7 @@ dist/
 data/*.jsonl
 repos/
 outputs/
+work/
 
 # Logs
 *.log

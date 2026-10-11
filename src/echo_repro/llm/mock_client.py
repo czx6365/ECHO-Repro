@@ -3,10 +3,12 @@ from __future__ import annotations
 import re
 import time
 
+from echo_repro.environment import package_for_module
 from echo_repro.llm.base import BaseLLMClient
 from echo_repro.models import LLMCallMetadata
 from echo_repro.prompts import (
     build_bug_spec_extraction_prompt,
+    build_dependency_repair_prompt,
     build_harness_generation_prompt,
     build_harness_repair_prompt,
     build_harness_strengthen_prompt,
@@ -70,6 +72,35 @@ class MockLLMClient(BaseLLMClient):
         content = _mock_strengthen_code(concise_context)
         self.last_call_metadata = _fake_metadata("mock", "mock-llm", self.last_prompt, content, started)
         return content
+
+    def repair_dependency(
+        self,
+        repo_slug: str,
+        missing_module: str,
+        stderr_tail: str,
+        python_version: str,
+        declaration_summary: str,
+        feedback: str = "",
+        installed_packages: str = "",
+    ) -> dict:
+        self.last_prompt = build_dependency_repair_prompt(
+            repo_slug=repo_slug,
+            missing_module=missing_module,
+            stderr_tail=stderr_tail,
+            python_version=python_version,
+            declaration_summary=declaration_summary,
+            feedback=feedback,
+            installed_packages=installed_packages,
+        )
+        package = package_for_module(missing_module)
+        payload = {
+            "packages": [{"name": package, "version_spec": ""}],
+            "install_commands": [f"python -m pip install {package}"],
+            "reason": f"Mock deterministic repair: module {missing_module} maps to package {package}.",
+        }
+        started = time.perf_counter()
+        self.last_call_metadata = _fake_metadata("mock", "mock-llm", self.last_prompt, str(payload), started)
+        return payload
 
 
 def _extract(text: str, label: str) -> str:

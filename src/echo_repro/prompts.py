@@ -122,3 +122,62 @@ Current harness:
 Execution feedback:
 {feedback}
 """
+
+
+def build_dependency_repair_prompt(
+    repo_slug: str,
+    missing_module: str,
+    stderr_tail: str,
+    python_version: str,
+    declaration_summary: str,
+    feedback: str = "",
+    installed_packages: str = "",
+) -> str:
+    retry = (
+        f"""
+Previous install attempt failed. Adjust the packages or versions and reply again.
+
+Previous install failure output:
+{feedback}
+"""
+        if feedback
+        else ""
+    )
+    installed = (
+        f"""
+
+Packages currently installed in the target virtualenv:
+{installed_packages}
+"""
+        if installed_packages
+        else ""
+    )
+    return f"""You are diagnosing a missing Python dependency for a bug reproduction pipeline.
+
+Return only a JSON object with these keys:
+- packages: array of objects, each with "name" (string) and "version_spec" (string, e.g. "==2.7.0" or "" for latest)
+- install_commands: array of strings, each a complete install command such as "python -m pip install package==1.2.3"
+- reason: string, one or two sentences explaining the choice
+
+Requirements:
+- Do not include markdown fences.
+- Prefer the exact version the repository declares when visible.
+- Use the fewest install commands needed, at most 3.
+- Only propose commands of the form "pip install <packages...>" or "python -m pip install <packages...>", or exactly "pip install ." / "pip install -e ." to install the repository itself.
+- Do not use --user, --target, --root, --prefix, or --break-system-packages flags.
+- The repository may be old; do not pick the newest major version if its metadata pins an older one.
+- Version choices must be compatible with the Python interpreter shown below.
+- If the missing module is pkg_resources, pin setuptools<81 explicitly: setuptools 81+ removed pkg_resources, so an unpinned install of the latest setuptools will not fix the import.
+- If the repository's own source directory shadows the pip-installed package (e.g. the missing module is '<pkg>.__check_build' or a '<pkg>.<submodule>' and <pkg> is already installed), propose exactly 'pip install -e .' to build and install the repository itself.
+- Check the installed-packages list below: if the relevant package is already installed there, the installed version is probably wrong - propose a different version instead of reinstalling the same one.
+
+Repository: {repo_slug}
+Python interpreter: {python_version}
+Missing module: {missing_module}
+
+Last stderr from the failing execution:
+{stderr_tail}
+
+Repository dependency declarations that mention this module:
+{declaration_summary}
+{installed}{retry}"""

@@ -13,6 +13,7 @@ from echo_repro.models import (
     EnvironmentProfileResult,
     ExecutionResult,
     FeedbackLoopAttempt,
+    FeedbackMode,
     HarnessCandidate,
     LLMCallMetadata,
     PipelineResult,
@@ -93,7 +94,18 @@ def run_feedback_loop(
     environment_repair_manager: EnvironmentRepairManager | None = None,
     initial_python_executable: Path | None = None,
     environment_profile: EnvironmentProfileResult | None = None,
+    feedback_mode: FeedbackMode = "patch_aware",
 ) -> PipelineResult:
+    """Run the harness repair loop under an evaluation protocol.
+
+    patch_blind: fixed-repo stdout/stderr/status/patch never enter any LLM
+    prompt. Once the buggy repo reproduces, the fixed repo runs at most once,
+    only for the final offline F2P evaluation; a fixed repo that does not
+    resolve ends the loop without further LLM repair.
+    patch_aware: legacy behavior; fixed execution feedback may strengthen the
+    oracle.
+    """
+    strict = feedback_mode == "patch_blind"
     harness_candidate = initial_harness
     attempts: list[FeedbackLoopAttempt] = []
     validation: ValidationResult | None = None
@@ -107,19 +119,28 @@ def run_feedback_loop(
 
     for attempt_index in range(1, max_attempts + 1):
         buggy_execution = _run_once(Path(buggy_repo), harness_candidate, python_executable)
-        buggy_status = classify_execution(buggy_execution)
+        buggy_status = classify_execution(buggy_execution, strict=strict)
         fixed_execution = None
         fixed_status = None
         environment_repair = None
-        validation = validate_fail_to_pass(buggy_execution)
+        validation = validate_fail_to_pass(buggy_execution, strict=strict)
 
         if buggy_status == "reproduced" and fixed_repo:
             fixed_execution = _run_once(Path(fixed_repo), harness_candidate, python_executable)
-            fixed_status = classify_execution(fixed_execution)
-            validation = validate_fail_to_pass(buggy_execution, fixed_execution)
+            fixed_status = classify_execution(fixed_execution, strict=strict)
+            validation = validate_fail_to_pass(buggy_execution, fixed_execution, strict=strict)
 
-        if buggy_status == "dependency_error" and environment_repair_manager:
-            environment_repair = environment_repair_manager.repair_dependency(buggy_execution)
+        # environment_error (ImportError / broken installation) can hide the
+        # same missing-dependency or unbuilt-extension condition as
+        # dependency_error - the astropy instances die here with "broken
+        # installation" and never reached repair. Let repair_dependency try:
+        # it no-ops safely (attempted=False) when the stderr is unparseable.
+        if buggy_status in {"dependency_error", "environment_error"} and environment_repair_manager:
+            environment_repair = environment_repair_manager.repair_dependency(
+                buggy_execution,
+                llm_client=llm_client,
+                repo_path=Path(buggy_repo),
+            )
 
         attempts.append(
             FeedbackLoopAttempt(
@@ -146,13 +167,16 @@ def run_feedback_loop(
         if attempt_index == max_attempts:
             break
 
-        if buggy_status == "dependency_error" and environment_repair_manager:
+        if buggy_status in {"dependency_error", "environment_error"} and environment_repair_manager:
             if environment_repair and environment_repair.success and environment_repair.python_path:
                 python_executable = environment_repair.python_path
                 next_action = "environment_repair"
+                strategy_note = (
+                    f" [{environment_repair.strategy}]" if environment_repair.strategy else ""
+                )
                 next_note = (
                     f"Installed {environment_repair.package} for missing module "
-                    f"{environment_repair.missing_module}."
+                    f"{environment_repair.missing_module}{strategy_note}."
                 )
                 current_prompt_text = ""
                 current_llm_metadata = LLMCallMetadata()
@@ -204,6 +228,14 @@ def run_feedback_loop(
             current_llm_metadata = llm_client.last_call_metadata or LLMCallMetadata()
             continue
 
+        # Buggy repo reproduced but the fixed repo did not resolve.
+        if feedback_mode == "patch_blind":
+            # patch_blind: the fixed execution above was the single offline F2P
+            # evaluation. Fixed stdout/stderr/status must never enter an LLM
+            # prompt, so a not-resolved fixed repo ends the loop here instead
+            # of triggering oracle strengthening.
+            break
+
         harness_candidate = repair_harness(
             concise_context,
             harness_candidate,
@@ -227,6 +259,7 @@ def run_feedback_loop(
         llm_provider=llm_provider,
         llm_model=llm_model,
         llm_temperature=llm_temperature,
+        feedback_mode=feedback_mode,
         bug_spec_prompt=bug_spec_prompt,
         bug_spec_llm_metadata=bug_spec_llm_metadata or LLMCallMetadata(),
         initial_harness_prompt=initial_prompt_text,

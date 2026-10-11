@@ -56,6 +56,15 @@ ExecutionStatus = Literal[
     "other",
 ]
 
+# Evaluation protocol (P0): which execution feedback may reach the LLM.
+# - patch_blind: only buggy-repo execution feedback; the fixed repo is
+#   executed at most once, purely for the final offline F2P evaluation.
+# - patch_aware: legacy behavior; fixed-repo execution feedback may be used
+#   to strengthen the oracle.
+FeedbackMode = Literal["patch_blind", "patch_aware"]
+
+FEEDBACK_MODES: tuple[FeedbackMode, ...] = ("patch_blind", "patch_aware")
+
 
 class ExecutionResult(BaseModel):
     repo_path: Path
@@ -79,6 +88,10 @@ class EnvironmentRepairResult(BaseModel):
     stdout: str = ""
     stderr: str = ""
     reason: str = ""
+    strategy: str = ""  # "llm" | "mechanical" | "" (not attempted)
+    llm_reason: str = ""
+    llm_prompt: str = ""
+    detected_python: str = ""
 
 
 class EnvironmentProfileResult(BaseModel):
@@ -136,6 +149,59 @@ class PreparedRepos(BaseModel):
     repo_cache_path: Path | None = None
 
 
+class NativeTestCounts(BaseModel):
+    """Test counts parsed from a pytest JUnit XML report."""
+
+    tests: int = 0
+    failures: int = 0
+    errors: int = 0
+    skipped: int = 0
+
+
+class NativeExecutionResult(BaseModel):
+    """One native-oracle pytest run against an isolated evaluation copy."""
+
+    repo_role: Literal["buggy", "fixed"]
+    command: list[str]
+    returncode: int | None
+    stdout: str
+    stderr: str
+    timed_out: bool = False
+    counts: NativeTestCounts | None = None
+
+
+NativeOracleStatus = Literal[
+    "not_run",
+    "confirmed",
+    "buggy_not_failed",
+    "fixed_not_passed",
+    "collection_error",
+    "setup_error",
+    "timeout",
+    "unsupported",
+]
+
+
+class NativeOracleResult(BaseModel):
+    """Outcome of the native pytest oracle (P1-A), which cross-checks the
+    official FAIL_TO_PASS tests after the pipeline has fully finished.
+
+    This result is for experiment auditing only; it never feeds back into
+    harness generation or the feedback loop.
+    """
+
+    mode: Literal["off", "pytest"] = "off"
+    status: NativeOracleStatus = "not_run"
+    framework: Literal["pytest", ""] = ""
+    target_tests: list[str] = Field(default_factory=list)
+    test_patch_applied_buggy: bool = False
+    test_patch_applied_fixed: bool = False
+    buggy_execution: NativeExecutionResult | None = None
+    fixed_execution: NativeExecutionResult | None = None
+    native_f2p: bool | None = None
+    reason: str = ""
+
+
 class FeedbackLoopAttempt(BaseModel):
     attempt: int
     action: str
@@ -154,6 +220,7 @@ class PipelineResult(BaseModel):
     llm_provider: str = ""
     llm_model: str = ""
     llm_temperature: float | None = None
+    feedback_mode: FeedbackMode = "patch_aware"
     bug_spec_prompt: str = ""
     bug_spec_llm_metadata: LLMCallMetadata = Field(default_factory=LLMCallMetadata)
     initial_harness_prompt: str = ""
@@ -167,3 +234,4 @@ class PipelineResult(BaseModel):
     validation: ValidationResult
     environment_profile: EnvironmentProfileResult | None = None
     attempts: list[FeedbackLoopAttempt] = Field(default_factory=list)
+    native_oracle: NativeOracleResult | None = None

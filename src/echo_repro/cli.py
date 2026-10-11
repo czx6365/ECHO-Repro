@@ -17,6 +17,8 @@ from echo_repro.environment import EnvironmentProfileManager, EnvironmentRepairM
 from echo_repro.llm.anthropic_client import AnthropicCompatibleLLMClient
 from echo_repro.llm.mock_client import MockLLMClient
 from echo_repro.llm.openai_client import OpenAICompatibleLLMClient
+from echo_repro.models import FEEDBACK_MODES
+from echo_repro.native_oracle import NATIVE_ORACLE_MODES, run_native_oracle
 from echo_repro.pipeline import run_pipeline, run_pipeline_with_feedback_loop
 from echo_repro.repo_manager import RepoPreparationError, prepare_swebench_repos
 from echo_repro.result_writer import write_experiment_record, write_preparation_failure_record
@@ -42,10 +44,10 @@ def _load_issue_text(issue_file: Path) -> str:
     return Path(issue_file).read_text(encoding="utf-8")
 
 
-def _resolve_llm_provider(llm: str, mock: bool | None) -> str:
+def _resolve_llm_provider(llm: str, mock: bool, no_mock: bool = False) -> str:
     if mock is True:
         return "mock"
-    if mock is False:
+    if no_mock is True and llm == "mock":
         return "openai"
     return llm
 
@@ -143,12 +145,17 @@ def _print_swebench_run_result(instance: dict, prepared, result, output_path: Pa
                 title="Environment Profile",
             )
         )
+    strict = result.feedback_mode == "patch_blind"
     console.print(
         Panel(
             _plain_text(json.dumps(
                 {
-                    "buggy_execution_status": classify_execution(result.buggy_execution),
-                    "fixed_execution_status": classify_execution(result.fixed_execution) if result.fixed_execution else None,
+                    "buggy_execution_status": classify_execution(result.buggy_execution, strict=strict),
+                    "fixed_execution_status": (
+                        classify_execution(result.fixed_execution, strict=strict)
+                        if result.fixed_execution
+                        else None
+                    ),
                     "validation": result.validation.model_dump(mode="json"),
                 },
                 indent=2,
@@ -156,6 +163,14 @@ def _print_swebench_run_result(instance: dict, prepared, result, output_path: Pa
             title="Execution Summary",
         )
     )
+
+    if result.native_oracle:
+        console.print(
+            Panel(
+                _plain_text(result.native_oracle.model_dump_json(indent=2)),
+                title="Native Oracle (audit only)",
+            )
+        )
 
     if result.attempts:
         attempt_table = Table(title="Feedback Loop Attempts")
@@ -179,10 +194,11 @@ def run_one(
     buggy_repo: Path = typer.Option(..., exists=True, file_okay=False, help="Buggy repository path."),
     fixed_repo: Path | None = typer.Option(None, exists=True, file_okay=False, help="Fixed repository path."),
     llm: str = typer.Option("mock", "--llm", help="LLM provider: mock, openai, or anthropic."),
-    mock: bool | None = typer.Option(None, "--mock/--no-mock", help="Backward-compatible alias for --llm."),
+    mock: bool = typer.Option(False, "--mock", help="Backward-compatible alias for --llm mock."),
+    no_mock: bool = typer.Option(False, "--no-mock", hidden=True, help="Backward-compatible alias for --llm openai."),
 ) -> None:
     issue_text = _load_issue_text(issue_file)
-    provider = _resolve_llm_provider(llm, mock)
+    provider = _resolve_llm_provider(llm, mock, no_mock)
     try:
         result = run_pipeline(
             issue_text,
@@ -203,10 +219,11 @@ def run_loop(
     fixed_repo: Path | None = typer.Option(None, exists=True, file_okay=False, help="Fixed repository path."),
     max_attempts: int = typer.Option(3, min=1, help="Maximum feedback loop attempts."),
     llm: str = typer.Option("mock", "--llm", help="LLM provider: mock, openai, or anthropic."),
-    mock: bool | None = typer.Option(None, "--mock/--no-mock", help="Backward-compatible alias for --llm."),
+    mock: bool = typer.Option(False, "--mock", help="Backward-compatible alias for --llm mock."),
+    no_mock: bool = typer.Option(False, "--no-mock", hidden=True, help="Backward-compatible alias for --llm openai."),
 ) -> None:
     issue_text = _load_issue_text(issue_file)
-    provider = _resolve_llm_provider(llm, mock)
+    provider = _resolve_llm_provider(llm, mock, no_mock)
     try:
         result = run_pipeline_with_feedback_loop(
             issue_text,
@@ -226,10 +243,11 @@ def inspect_context(
     issue_file: Path = typer.Option(..., exists=True, help="Path to issue text file."),
     repo: Path = typer.Option(..., exists=True, file_okay=False, help="Repository path."),
     llm: str = typer.Option("mock", "--llm", help="LLM provider: mock, openai, or anthropic."),
-    mock: bool | None = typer.Option(None, "--mock/--no-mock", help="Backward-compatible alias for --llm."),
+    mock: bool = typer.Option(False, "--mock", help="Backward-compatible alias for --llm mock."),
+    no_mock: bool = typer.Option(False, "--no-mock", hidden=True, help="Backward-compatible alias for --llm openai."),
 ) -> None:
     issue_text = _load_issue_text(issue_file)
-    provider = _resolve_llm_provider(llm, mock)
+    provider = _resolve_llm_provider(llm, mock, no_mock)
     try:
         llm_client = _get_client_for_provider(provider)
     except ValueError as exc:
@@ -304,15 +322,54 @@ def run_swebench_one(
     instance_id: str = typer.Option(..., help="SWE-bench instance identifier."),
     workdir: Path = typer.Option(..., help="Directory for prepared buggy and fixed repos."),
     llm: str = typer.Option("mock", "--llm", help="LLM provider: mock, openai, or anthropic."),
-    mock: bool | None = typer.Option(None, "--mock/--no-mock", help="Backward-compatible alias for --llm."),
+    mock: bool = typer.Option(False, "--mock", help="Backward-compatible alias for --llm mock."),
+    no_mock: bool = typer.Option(False, "--no-mock", hidden=True, help="Backward-compatible alias for --llm openai."),
     max_attempts: int | None = typer.Option(None, min=1, help="Use the feedback loop with this many attempts."),
     env_root: Path = typer.Option(Path("envs"), help="Directory for cached per-repository virtual environments."),
     env_python: Path | None = typer.Option(None, "--env-python", exists=True, dir_okay=False, help="Python interpreter used to create environment profiles."),
-    env_profile: bool = typer.Option(True, "--env-profile/--no-env-profile", help="Detect and reuse repo-level environment profiles."),
-    allow_env_install: bool = typer.Option(False, "--allow-env-install/--no-allow-env-install", help="Allow creating/installing cached repo environments."),
+    env_profile: bool = typer.Option(True, "--env-profile", help="Detect and reuse repo-level environment profiles."),
+    no_env_profile: bool = typer.Option(False, "--no-env-profile", hidden=True, help="Disable repo-level environment profiles."),
+    allow_env_install: bool = typer.Option(False, "--allow-env-install", help="Allow creating/installing cached repo environments."),
+    no_allow_env_install: bool = typer.Option(False, "--no-allow-env-install", hidden=True, help="Disable cached repo environment installation."),
     cache_dir: Path = typer.Option(Path("repos/cache"), help="Directory for cached repository mirrors."),
     output_root: Path = typer.Option(Path("outputs"), help="Directory for experiment result artifacts."),
+    feedback_mode: str = typer.Option(
+        "patch_blind",
+        "--feedback-mode",
+        help=(
+            "Evaluation protocol. patch_blind (default, P0 research protocol): fixed-repo "
+            "stdout/stderr/status never reach the LLM; the fixed repo runs at most once for the "
+            "final offline F2P evaluation. patch_aware: legacy behavior; fixed-repo execution "
+            "feedback may strengthen the oracle."
+        ),
+    ),
+    native_oracle: str = typer.Option(
+        "off",
+        "--native-oracle",
+        help=(
+            "Native pytest oracle (P1-A). off (default): do not run. pytest: after the "
+            "pipeline finishes, apply test_patch to isolated copies of the prepared repos and "
+            "run the official FAIL_TO_PASS tests; results are recorded for auditing only and "
+            "never feed back into harness generation."
+        ),
+    ),
+    native_test_timeout: int = typer.Option(
+        600,
+        "--native-test-timeout",
+        min=1,
+        help="Timeout in seconds for each native oracle pytest run (default 600).",
+    ),
 ) -> None:
+    if feedback_mode not in FEEDBACK_MODES:
+        raise typer.BadParameter(
+            f"feedback_mode must be one of {', '.join(FEEDBACK_MODES)}, got {feedback_mode!r}."
+        )
+    if native_oracle not in NATIVE_ORACLE_MODES:
+        raise typer.BadParameter(
+            f"native_oracle must be one of {', '.join(NATIVE_ORACLE_MODES)}, got {native_oracle!r}."
+        )
+    env_profile = env_profile and not no_env_profile
+    allow_env_install = allow_env_install and not no_allow_env_install
     instances = load_instances(instances_file)
     instance = select_instance(instances, instance_id)
     try:
@@ -324,10 +381,13 @@ def run_swebench_one(
             workdir=workdir,
             cache_dir=cache_dir,
             output_root=output_root,
+            feedback_mode=feedback_mode,
+            native_oracle=native_oracle,
+            native_test_timeout=native_test_timeout,
         )
         _raise_prepare_error(exc)
     issue_text = extract_issue_text(instance)
-    provider = _resolve_llm_provider(llm, mock)
+    provider = _resolve_llm_provider(llm, mock, no_mock)
 
     try:
         if max_attempts is not None:
@@ -356,6 +416,7 @@ def run_swebench_one(
                     base_python=env_python or Path(sys.executable),
                 ),
                 environment_profile_manager=environment_profile_manager,
+                feedback_mode=feedback_mode,
             )
         else:
             result = run_pipeline(
@@ -364,9 +425,25 @@ def run_swebench_one(
                 fixed_repo=prepared.fixed_repo,
                 use_mock_llm=provider == "mock",
                 llm_provider=provider,
+                feedback_mode=feedback_mode,
             )
     except ValueError as exc:
         _raise_cli_error(exc)
+
+    # P1-A: the native oracle executes strictly after the pipeline/feedback
+    # loop has finished and every LLM call is complete, so its results can
+    # never leak into harness generation.
+    result = result.model_copy(
+        update={
+            "native_oracle": run_native_oracle(
+                instance=instance,
+                prepared=prepared,
+                pipeline_result=result,
+                mode=native_oracle,
+                timeout_seconds=native_test_timeout,
+            )
+        }
+    )
 
     output_path = write_experiment_record(
         instance=instance,
@@ -374,6 +451,7 @@ def run_swebench_one(
         result=result,
         max_attempts=max_attempts,
         output_root=output_root,
+        native_test_timeout=native_test_timeout,
     )
     _print_swebench_run_result(instance, prepared, result, output_path)
 

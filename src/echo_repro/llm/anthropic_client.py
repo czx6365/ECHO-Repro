@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import http.client
+import threading
 import time
 import urllib.error
 import urllib.request
 from typing import Any, Callable
 
 from echo_repro.config import LLMSettings, get_llm_settings
-from echo_repro.llm.base import BaseLLMClient
+from echo_repro.llm.base import BaseLLMClient, RequestHungError
 from echo_repro.models import LLMCallMetadata
 
 
@@ -29,6 +30,45 @@ def _messages_url(base_url: str) -> str:
     if base.endswith("/v1"):
         return f"{base}/messages"
     return f"{base}/v1/messages"
+
+
+# 挂死保护的宽限时间(秒):socket 超时之上再容忍这么久
+_HANG_GRACE_SECONDS = 30
+
+
+def _urlopen_with_wall_clock(
+    request: urllib.request.Request,
+    timeout: int,
+) -> dict[str, Any]:
+    """
+    带墙钟上限的 urlopen。
+
+    macOS 上经 CONNECT 代理的 SSL 读可能无视 socket 超时:
+    实测端点劣化时一次读挂死 30+ 分钟不抛错(如
+    RemoteDisconnected 要等对端 FIN 才醒)。因此在 daemon 线程里
+    发请求并限时 join;超时后线程泄漏但进程继续推进,
+    CLI 进程生命周期短,可接受。
+    """
+    outcome: dict[str, Any] = {}
+    errors: list[Exception] = []
+
+    def _call() -> None:
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                outcome["data"] = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:  # 原样转抛给外层重试逻辑
+            errors.append(exc)
+
+    thread = threading.Thread(target=_call, daemon=True)
+    thread.start()
+    thread.join(timeout + _HANG_GRACE_SECONDS)
+    if thread.is_alive():
+        raise RequestHungError(
+            f"Anthropic-compatible request hung past {timeout + _HANG_GRACE_SECONDS}s wall clock"
+        )
+    if errors:
+        raise errors[0]
+    return outcome["data"]
 
 
 def _default_transport(
@@ -59,9 +99,12 @@ def _default_transport(
         )
 
         try:
-            # 发送请求并读取响应
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
+            # 发送请求并读取响应(带墙钟上限,防止端点挂死)
+            return _urlopen_with_wall_clock(request, timeout)
+
+        except RequestHungError:
+            # 挂死说明端点处于只收不响的状态,重试只会重复挂死
+            raise
 
         except urllib.error.HTTPError as exc:
             # HTTPError 说明服务器返回了非 2xx 状态码

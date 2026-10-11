@@ -19,6 +19,11 @@ TABLE_COLUMNS = [
     "reproduced?",
     "fixed passed?",
     "failure category",
+    "feedback mode",
+    "harness F2P",
+    "native oracle status",
+    "native F2P",
+    "verified F2P",
     "cost",
     "attempts",
 ]
@@ -91,6 +96,11 @@ def summarize_instance(instance: dict[str, Any], outputs_dir: Path) -> dict[str,
             "reproduced?": "pending",
             "fixed passed?": "pending",
             "failure category": "not_run",
+            "feedback mode": "unknown",
+            "harness F2P": "pending",
+            "native oracle status": "unknown",
+            "native F2P": "pending",
+            "verified F2P": "pending",
             "cost": "0",
             "attempts": "0",
         }
@@ -98,6 +108,7 @@ def summarize_instance(instance: dict[str, Any], outputs_dir: Path) -> dict[str,
     final = result.get("final_result", {})
     buggy_status = final.get("buggy_status")
     fixed_status = final.get("fixed_status")
+    native_block = result.get("native_oracle") or {}
 
     return {
         "instance_id": instance_id,
@@ -107,6 +118,13 @@ def summarize_instance(instance: dict[str, Any], outputs_dir: Path) -> dict[str,
         "reproduced?": bool_mark(buggy_status == "reproduced"),
         "fixed passed?": bool_mark(fixed_status == "resolved"),
         "failure category": str(final.get("failure_category") or ""),
+        "feedback mode": str(result.get("run_config", {}).get("feedback_mode") or "unknown"),
+        "harness F2P": bool_mark(
+            final.get("harness_f2p") if "harness_f2p" in final else final.get("is_f2p")
+        ),
+        "native oracle status": str(native_block.get("status") or "unknown"),
+        "native F2P": bool_mark(final.get("native_f2p")),
+        "verified F2P": bool_mark(final.get("verified_f2p")),
         "cost": str(total_tokens(result)),
         "attempts": str(len(result.get("attempts_summary", []))),
     }
